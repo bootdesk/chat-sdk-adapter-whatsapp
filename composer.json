@@ -3,6 +3,7 @@
     "name": "bootdesk/chat-sdk-adapter-whatsapp",
     "description": "WhatsApp adapter for bootdesk/chat-sdk-core",
     "type": "library",
+    "license": "MIT",
     "require": {
         "php": ">=8.2",
         "bootdesk/chat-sdk-core": "*",
