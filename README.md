@@ -160,6 +160,9 @@ As of May 2026, WhatsApp supports BSUIDs — a user identifier independent of ph
 
 WhatsApp Business API only. No edit or delete support in the WhatsApp Cloud API.
 
+## Documentationn
+Full API documentation: https://bootdesk.github.io/chat-sdk
+
 ## License
 
 MIT
