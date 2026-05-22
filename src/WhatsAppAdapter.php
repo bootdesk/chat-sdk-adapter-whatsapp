@@ -14,11 +14,14 @@ use BootDesk\ChatSDK\Core\Contracts\HandlesBatchedWebhooks;
 use BootDesk\ChatSDK\Core\Contracts\HandlesReactions;
 use BootDesk\ChatSDK\Core\Contracts\HandlesSlashCommands;
 use BootDesk\ChatSDK\Core\Contracts\HandlesStatuses;
+use BootDesk\ChatSDK\Core\Contracts\HasAuthorInfo;
 use BootDesk\ChatSDK\Core\Contracts\StateAdapter;
 use BootDesk\ChatSDK\Core\Exceptions\AdapterException;
 use BootDesk\ChatSDK\Core\Exceptions\AuthenticationException;
 use BootDesk\ChatSDK\Core\FetchOptions;
 use BootDesk\ChatSDK\Core\FetchResult;
+use BootDesk\ChatSDK\Core\LocalizationType;
+use BootDesk\ChatSDK\Core\LocalizationValue;
 use BootDesk\ChatSDK\Core\Message;
 use BootDesk\ChatSDK\Core\PostableMessage;
 use BootDesk\ChatSDK\Core\SentMessage;
@@ -31,7 +34,7 @@ use Psr\Http\Client\ClientInterface;
 use Psr\Http\Message\ResponseInterface;
 use Psr\Http\Message\ServerRequestInterface;
 
-class WhatsAppAdapter implements Adapter, AdapterHasMessagingWindow, HandlesBatchedWebhooks, HandlesReactions, HandlesSlashCommands, HandlesStatuses
+class WhatsAppAdapter implements Adapter, AdapterHasMessagingWindow, HandlesBatchedWebhooks, HandlesReactions, HandlesSlashCommands, HandlesStatuses, HasAuthorInfo
 {
     protected ?string $botUserId = null;
 
@@ -128,6 +131,7 @@ class WhatsAppAdapter implements Adapter, AdapterHasMessagingWindow, HandlesBatc
 
                 $value = $change['value'] ?? [];
                 $messages = $value['messages'] ?? [];
+                $contacts = $value['contacts'] ?? [];
                 $phoneNumberId = $value['metadata']['phone_number_id'] ?? $this->phoneNumberId;
 
                 foreach ($messages as $msg) {
@@ -144,7 +148,10 @@ class WhatsAppAdapter implements Adapter, AdapterHasMessagingWindow, HandlesBatc
                         'userWaId' => $msg['from'],
                     ]);
 
+                    $author = $this->createAuthor($msg['from'], $contacts[0] ?? null);
+
                     return [
+                        'author' => $author,
                         'emoji' => $rawEmoji,
                         'rawEmoji' => $rawEmoji,
                         'added' => $added,
@@ -224,6 +231,7 @@ class WhatsAppAdapter implements Adapter, AdapterHasMessagingWindow, HandlesBatc
 
                 $value = $change['value'] ?? [];
                 $messages = $value['messages'] ?? [];
+                $contacts = $value['contacts'] ?? [];
                 $phoneNumberId = $value['metadata']['phone_number_id'] ?? $this->phoneNumberId;
 
                 foreach ($messages as $msg) {
@@ -242,7 +250,10 @@ class WhatsAppAdapter implements Adapter, AdapterHasMessagingWindow, HandlesBatc
                         'userWaId' => $msg['from'],
                     ]);
 
+                    $author = $this->createAuthor($msg['from'], $contacts[0] ?? null);
+
                     return [
+                        'author' => $author,
                         'command' => $command,
                         'text' => $text,
                         'userId' => $msg['from'],
@@ -327,10 +338,13 @@ class WhatsAppAdapter implements Adapter, AdapterHasMessagingWindow, HandlesBatc
                             'userWaId' => $msg['from'],
                         ]);
 
+                        $author = $this->createAuthor($msg['from'], $contacts[0] ?? null);
+
                         $events[] = new WebhookEvent(
                             type: WebhookEvent::TYPE_REACTION,
                             threadId: $threadId,
                             payload: [
+                                'author' => $author,
                                 'emoji' => $rawEmoji,
                                 'rawEmoji' => $rawEmoji,
                                 'added' => $rawEmoji !== '',
@@ -354,10 +368,13 @@ class WhatsAppAdapter implements Adapter, AdapterHasMessagingWindow, HandlesBatc
                             $command = $parts[0];
                             $text = $parts[1] ?? '';
 
+                            $author = $this->createAuthor($msg['from'], $contacts[0] ?? null);
+
                             $events[] = new WebhookEvent(
                                 type: WebhookEvent::TYPE_SLASH_COMMAND,
                                 threadId: $threadId,
                                 payload: [
+                                    'author' => $author,
                                     'command' => $command,
                                     'text' => $text,
                                     'userId' => $msg['from'],
@@ -594,6 +611,11 @@ class WhatsAppAdapter implements Adapter, AdapterHasMessagingWindow, HandlesBatc
         );
     }
 
+    public function getAuthorInfo(Author $author): Author
+    {
+        return $author;
+    }
+
     public function openDM(string $userId): ?string
     {
         // WhatsApp is always 1:1 — just return the encoded thread ID
@@ -635,6 +657,25 @@ class WhatsAppAdapter implements Adapter, AdapterHasMessagingWindow, HandlesBatc
         return $this->postMessage($threadId, PostableMessage::text($fullText));
     }
 
+    /**
+     * @param  array<string, mixed>|null  $contact
+     */
+    protected function createAuthor(string $userId, ?array $contact): Author
+    {
+        $localizations = [];
+        $name = null;
+
+        if ($contact !== null) {
+            if (isset($contact['profile']['language'])) {
+                $localizations[] = new LocalizationValue(LocalizationType::Language, $contact['profile']['language']);
+            }
+
+            $name = $contact['profile']['name'] ?? $contact['profile']['username'] ?? null;
+        }
+
+        return new Author(...$localizations, id: $userId, name: $name);
+    }
+
     protected function parseInboundMessage(array $msg, ?array $contact, string $phoneNumberId, string $rawBody, ?string $originId = null): Message
     {
         $text = $msg['text']['body']
@@ -659,10 +700,16 @@ class WhatsAppAdapter implements Adapter, AdapterHasMessagingWindow, HandlesBatc
             ?? $contact['profile']['username']
             ?? $userWaId;
 
+        $authorLocalizations = [];
+        if (isset($contact['profile']['language'])) {
+            $authorLocalizations[] = new LocalizationValue(LocalizationType::Language, $contact['profile']['language']);
+        }
+
         return new Message(
             id: $msgId,
             threadId: $threadId,
             author: new Author(
+                ...$authorLocalizations,
                 id: $userWaId,
                 name: $contactName,
                 isBot: false,
