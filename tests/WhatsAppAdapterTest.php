@@ -386,6 +386,122 @@ class WhatsAppAdapterTest extends TestCase
         $this->adapter->parseWebhook($request);
     }
 
+    public function test_fixture_first_message(): void
+    {
+        $fixture = json_decode(
+            file_get_contents(__DIR__.'/fixtures/whatsapp.json'),
+            true
+        );
+
+        $body = json_encode($fixture['firstMessage']);
+        $signature = 'sha256='.hash_hmac('sha256', $body, 'my_app_secret');
+
+        $request = $this->factory->createServerRequest('POST', '/webhooks/whatsapp')
+            ->withHeader('x-hub-signature-256', $signature)
+            ->withBody($this->factory->createStream($body));
+
+        $message = $this->adapter->parseWebhook($request);
+
+        $this->assertSame('wamid.FAKE_MSG_ID_001', $message->id);
+        $this->assertSame('whatsapp:100000000000001:15550002222', $message->threadId);
+        $this->assertSame('15550002222', $message->author->id);
+        $this->assertSame('Test User', $message->author->name);
+        $this->assertSame('What is BootDesk?', $message->text);
+        $this->assertTrue($message->isDM);
+        $this->assertSame('100000000000002', $message->originId);
+    }
+
+    public function test_fixture_batched_messages(): void
+    {
+        $fixture = json_decode(
+            file_get_contents(__DIR__.'/fixtures/whatsapp.json'),
+            true
+        );
+
+        $body = json_encode($fixture['batchedMessages']);
+        $signature = 'sha256='.hash_hmac('sha256', $body, 'my_app_secret');
+
+        $request = $this->factory->createServerRequest('POST', '/webhooks/whatsapp')
+            ->withHeader('x-hub-signature-256', $signature)
+            ->withBody($this->factory->createStream($body));
+
+        $events = $this->adapter->parseBatchedWebhook($request);
+
+        $this->assertCount(2, $events);
+        $this->assertSame('message', $events[0]->type);
+        $this->assertSame('Hello from Alice', $events[0]->payload->text);
+        $this->assertSame('100000000000002', $events[0]->originId);
+        $this->assertSame('message', $events[1]->type);
+        $this->assertSame('Hello from Bob', $events[1]->payload->text);
+        $this->assertSame('100000000000002', $events[1]->originId);
+    }
+
+    public function test_fixture_reaction_parsed_by_parse_batched(): void
+    {
+        $fixture = json_decode(
+            file_get_contents(__DIR__.'/fixtures/whatsapp.json'),
+            true
+        );
+
+        $body = json_encode($fixture['reactionEvent']);
+        $signature = 'sha256='.hash_hmac('sha256', $body, 'my_app_secret');
+
+        $request = $this->factory->createServerRequest('POST', '/webhooks/whatsapp')
+            ->withHeader('x-hub-signature-256', $signature)
+            ->withBody($this->factory->createStream($body));
+
+        $events = $this->adapter->parseBatchedWebhook($request);
+
+        $this->assertCount(1, $events);
+        $this->assertSame('reaction', $events[0]->type);
+        $this->assertSame('❤️', $events[0]->payload['emoji']);
+        $this->assertTrue($events[0]->payload['added']);
+        $this->assertSame('wamid.FAKE_MSG_ID_001', $events[0]->payload['messageId']);
+        $this->assertSame('100000000000002', $events[0]->originId);
+    }
+
+    public function test_fixture_delivered_status(): void
+    {
+        $fixture = json_decode(
+            file_get_contents(__DIR__.'/fixtures/whatsapp.json'),
+            true
+        );
+
+        $body = json_encode($fixture['deliveredStatus']);
+        $signature = 'sha256='.hash_hmac('sha256', $body, 'my_app_secret');
+
+        $request = $this->factory->createServerRequest('POST', '/webhooks/whatsapp')
+            ->withHeader('x-hub-signature-256', $signature)
+            ->withBody($this->factory->createStream($body));
+
+        $events = $this->adapter->parseBatchedWebhook($request);
+
+        $this->assertCount(1, $events);
+        $this->assertSame('status', $events[0]->type);
+        $this->assertSame('delivered', $events[0]->payload['type']);
+        $this->assertSame(['wamid.FAKE_MSG_DELIVERED_001'], $events[0]->payload['messageIds']);
+    }
+
+    public function test_fixture_sent_status_is_skipped_by_parse_batched(): void
+    {
+        $fixture = json_decode(
+            file_get_contents(__DIR__.'/fixtures/whatsapp.json'),
+            true
+        );
+
+        $body = json_encode($fixture['statusUpdate']);
+        $signature = 'sha256='.hash_hmac('sha256', $body, 'my_app_secret');
+
+        $request = $this->factory->createServerRequest('POST', '/webhooks/whatsapp')
+            ->withHeader('x-hub-signature-256', $signature)
+            ->withBody($this->factory->createStream($body));
+
+        $events = $this->adapter->parseBatchedWebhook($request);
+
+        // "sent" status is silently ignored — only delivered/read/failed produce events
+        $this->assertCount(0, $events);
+    }
+
     public function test_parse_webhook_with_bsuid(): void
     {
         $body = json_encode([
@@ -722,5 +838,337 @@ class WhatsAppAdapterTest extends TestCase
             ->withBody($this->factory->createStream($body));
 
         $this->assertNull($this->adapter->parseStatus($request));
+    }
+
+    public function test_parse_slash_command_basic(): void
+    {
+        $body = json_encode([
+            'entry' => [[
+                'changes' => [[
+                    'field' => 'messages',
+                    'value' => [
+                        'metadata' => ['phone_number_id' => 'phone123'],
+                        'messages' => [[
+                            'from' => '5511999999999',
+                            'text' => ['body' => '/help'],
+                            'timestamp' => '1700000000',
+                            'type' => 'text',
+                        ]],
+                    ],
+                ]],
+            ]],
+        ]);
+
+        $request = $this->factory->createServerRequest('POST', '/webhooks/whatsapp')
+            ->withBody($this->factory->createStream($body));
+
+        $result = $this->adapter->parseSlashCommand($request);
+
+        $this->assertNotNull($result);
+        $this->assertSame('/help', $result['command']);
+        $this->assertSame('', $result['text']);
+        $this->assertSame('5511999999999', $result['userId']);
+        $this->assertFalse($result['isBot']);
+        $this->assertFalse($result['isMe']);
+        $this->assertSame('whatsapp:phone123:5511999999999', $result['channelId']);
+    }
+
+    public function test_parse_slash_command_with_arguments(): void
+    {
+        $body = json_encode([
+            'entry' => [[
+                'changes' => [[
+                    'field' => 'messages',
+                    'value' => [
+                        'metadata' => ['phone_number_id' => 'phone123'],
+                        'messages' => [[
+                            'from' => '5511999999999',
+                            'text' => ['body' => '/weather sao paulo'],
+                            'timestamp' => '1700000000',
+                            'type' => 'text',
+                        ]],
+                    ],
+                ]],
+            ]],
+        ]);
+
+        $request = $this->factory->createServerRequest('POST', '/webhooks/whatsapp')
+            ->withBody($this->factory->createStream($body));
+
+        $result = $this->adapter->parseSlashCommand($request);
+
+        $this->assertNotNull($result);
+        $this->assertSame('/weather', $result['command']);
+        $this->assertSame('sao paulo', $result['text']);
+    }
+
+    public function test_parse_slash_command_returns_null_for_non_slash(): void
+    {
+        $body = json_encode([
+            'entry' => [[
+                'changes' => [[
+                    'field' => 'messages',
+                    'value' => [
+                        'metadata' => ['phone_number_id' => 'phone123'],
+                        'messages' => [[
+                            'from' => '5511999999999',
+                            'text' => ['body' => 'hello world'],
+                            'timestamp' => '1700000000',
+                            'type' => 'text',
+                        ]],
+                    ],
+                ]],
+            ]],
+        ]);
+
+        $request = $this->factory->createServerRequest('POST', '/webhooks/whatsapp')
+            ->withBody($this->factory->createStream($body));
+
+        $this->assertNull($this->adapter->parseSlashCommand($request));
+    }
+
+    public function test_parse_slash_command_returns_null_for_empty_text(): void
+    {
+        $body = json_encode([
+            'entry' => [[
+                'changes' => [[
+                    'field' => 'messages',
+                    'value' => [
+                        'metadata' => ['phone_number_id' => 'phone123'],
+                        'messages' => [[
+                            'from' => '5511999999999',
+                            'text' => ['body' => ''],
+                            'timestamp' => '1700000000',
+                            'type' => 'text',
+                        ]],
+                    ],
+                ]],
+            ]],
+        ]);
+
+        $request = $this->factory->createServerRequest('POST', '/webhooks/whatsapp')
+            ->withBody($this->factory->createStream($body));
+
+        $this->assertNull($this->adapter->parseSlashCommand($request));
+    }
+
+    public function test_parse_slash_command_returns_null_for_invalid_payload(): void
+    {
+        $request = $this->factory->createServerRequest('POST', '/webhooks/whatsapp')
+            ->withBody($this->factory->createStream('not json'));
+
+        $this->assertNull($this->adapter->parseSlashCommand($request));
+    }
+
+    public function test_parse_slash_command_returns_null_for_non_messages_field(): void
+    {
+        $body = json_encode([
+            'entry' => [[
+                'changes' => [[
+                    'field' => 'other',
+                    'value' => [
+                        'metadata' => ['phone_number_id' => 'phone123'],
+                        'messages' => [['text' => ['body' => '/help']]],
+                    ],
+                ]],
+            ]],
+        ]);
+
+        $request = $this->factory->createServerRequest('POST', '/webhooks/whatsapp')
+            ->withBody($this->factory->createStream($body));
+
+        $this->assertNull($this->adapter->parseSlashCommand($request));
+    }
+
+    public function test_parse_batched_slash_command(): void
+    {
+        $body = json_encode([
+            'object' => 'whatsapp_business_account',
+            'entry' => [[
+                'id' => 'WHATSAPP_BA_1',
+                'changes' => [[
+                    'field' => 'messages',
+                    'value' => [
+                        'messaging_product' => 'whatsapp',
+                        'metadata' => ['display_phone_number' => '+15551234567', 'phone_number_id' => 'phone123'],
+                        'contacts' => [['profile' => ['name' => 'Alice']]],
+                        'messages' => [[
+                            'from' => '5511999999999',
+                            'id' => 'm1',
+                            'text' => ['body' => '/help'],
+                            'timestamp' => '1000',
+                            'type' => 'text',
+                        ]],
+                    ],
+                ]],
+            ]],
+        ]);
+
+        $signature = 'sha256='.hash_hmac('sha256', $body, 'my_app_secret');
+
+        $request = $this->factory->createServerRequest('POST', '/webhooks/whatsapp')
+            ->withHeader('x-hub-signature-256', $signature)
+            ->withBody($this->factory->createStream($body));
+
+        $events = $this->adapter->parseBatchedWebhook($request);
+
+        $this->assertCount(1, $events);
+        $this->assertSame('slash_command', $events[0]->type);
+        $this->assertSame('/help', $events[0]->payload['command']);
+        $this->assertSame('', $events[0]->payload['text']);
+        $this->assertSame('5511999999999', $events[0]->payload['userId']);
+        $this->assertSame('WHATSAPP_BA_1', $events[0]->originId);
+    }
+
+    public function test_parse_batched_slash_command_with_arguments(): void
+    {
+        $body = json_encode([
+            'object' => 'whatsapp_business_account',
+            'entry' => [[
+                'id' => 'WHATSAPP_BA_1',
+                'changes' => [[
+                    'field' => 'messages',
+                    'value' => [
+                        'messaging_product' => 'whatsapp',
+                        'metadata' => ['display_phone_number' => '+15551234567', 'phone_number_id' => 'phone123'],
+                        'contacts' => [['profile' => ['name' => 'Bob']]],
+                        'messages' => [[
+                            'from' => '5511999999999',
+                            'id' => 'm1',
+                            'text' => ['body' => '/weather sao paulo'],
+                            'timestamp' => '1000',
+                            'type' => 'text',
+                        ]],
+                    ],
+                ]],
+            ]],
+        ]);
+
+        $signature = 'sha256='.hash_hmac('sha256', $body, 'my_app_secret');
+
+        $request = $this->factory->createServerRequest('POST', '/webhooks/whatsapp')
+            ->withHeader('x-hub-signature-256', $signature)
+            ->withBody($this->factory->createStream($body));
+
+        $events = $this->adapter->parseBatchedWebhook($request);
+
+        $this->assertCount(1, $events);
+        $this->assertSame('slash_command', $events[0]->type);
+        $this->assertSame('/weather', $events[0]->payload['command']);
+        $this->assertSame('sao paulo', $events[0]->payload['text']);
+    }
+
+    public function test_parse_batched_multiple_messages(): void
+    {
+        $body = json_encode([
+            'object' => 'whatsapp_business_account',
+            'entry' => [[
+                'id' => 'WHATSAPP_BA_1',
+                'changes' => [[
+                    'field' => 'messages',
+                    'value' => [
+                        'messaging_product' => 'whatsapp',
+                        'metadata' => ['display_phone_number' => '+15551234567', 'phone_number_id' => 'phone123'],
+                        'contacts' => [['profile' => ['name' => 'Alice']], ['profile' => ['name' => 'Bob']]],
+                        'messages' => [
+                            ['from' => '5511111111', 'id' => 'm1', 'text' => ['body' => 'first'], 'timestamp' => '1000', 'type' => 'text'],
+                            ['from' => '5522222222', 'id' => 'm2', 'text' => ['body' => 'second'], 'timestamp' => '1001', 'type' => 'text'],
+                        ],
+                    ],
+                ]],
+            ]],
+        ]);
+
+        $signature = 'sha256='.hash_hmac('sha256', $body, 'my_app_secret');
+
+        $request = $this->factory->createServerRequest('POST', '/webhooks/whatsapp')
+            ->withHeader('x-hub-signature-256', $signature)
+            ->withBody($this->factory->createStream($body));
+
+        $events = $this->adapter->parseBatchedWebhook($request);
+
+        $this->assertCount(2, $events);
+        $this->assertSame('message', $events[0]->type);
+        $this->assertSame('first', $events[0]->payload->text);
+        $this->assertSame('WHATSAPP_BA_1', $events[0]->originId);
+        $this->assertSame('message', $events[1]->type);
+        $this->assertSame('second', $events[1]->payload->text);
+        $this->assertSame('WHATSAPP_BA_1', $events[1]->originId);
+    }
+
+    public function test_parse_batched_mixed_messages_and_statuses(): void
+    {
+        $body = json_encode([
+            'object' => 'whatsapp_business_account',
+            'entry' => [[
+                'id' => 'WHATSAPP_BA_1',
+                'changes' => [[
+                    'field' => 'messages',
+                    'value' => [
+                        'messaging_product' => 'whatsapp',
+                        'metadata' => ['display_phone_number' => '+15551234567', 'phone_number_id' => 'phone123'],
+                        'contacts' => [['profile' => ['name' => 'Charlie']]],
+                        'messages' => [
+                            ['from' => '5533333333', 'id' => 'm1', 'text' => ['body' => 'hello'], 'timestamp' => '1000', 'type' => 'text'],
+                            ['from' => '5544444444', 'id' => 'r1', 'timestamp' => '1001', 'type' => 'reaction', 'reaction' => ['emoji' => '👍', 'message_id' => 'orig_1']],
+                        ],
+                        'statuses' => [
+                            ['id' => 's1', 'status' => 'delivered', 'recipient_id' => '5533333333', 'timestamp' => '1002'],
+                        ],
+                    ],
+                ]],
+            ]],
+        ]);
+
+        $signature = 'sha256='.hash_hmac('sha256', $body, 'my_app_secret');
+
+        $request = $this->factory->createServerRequest('POST', '/webhooks/whatsapp')
+            ->withHeader('x-hub-signature-256', $signature)
+            ->withBody($this->factory->createStream($body));
+
+        $events = $this->adapter->parseBatchedWebhook($request);
+
+        $this->assertCount(3, $events);
+        $this->assertSame('message', $events[0]->type);
+        $this->assertSame('hello', $events[0]->payload->text);
+        $this->assertSame('WHATSAPP_BA_1', $events[0]->originId);
+        $this->assertSame('reaction', $events[1]->type);
+        $this->assertSame('👍', $events[1]->payload['emoji']);
+        $this->assertSame('WHATSAPP_BA_1', $events[1]->originId);
+        $this->assertSame('status', $events[2]->type);
+        $this->assertSame('delivered', $events[2]->payload['type']);
+        $this->assertSame('WHATSAPP_BA_1', $events[2]->originId);
+    }
+
+    public function test_parse_batched_invalid_payload(): void
+    {
+        $request = $this->factory->createServerRequest('POST', '/webhooks/whatsapp')
+            ->withBody($this->factory->createStream('invalid'));
+
+        $this->assertSame([], $this->adapter->parseBatchedWebhook($request));
+    }
+
+    public function test_parse_batched_empty_payload(): void
+    {
+        $request = $this->factory->createServerRequest('POST', '/webhooks/whatsapp')
+            ->withBody($this->factory->createStream('{}'));
+
+        $this->assertSame([], $this->adapter->parseBatchedWebhook($request));
+    }
+
+    public function test_parse_batched_no_messages_field(): void
+    {
+        $body = json_encode([
+            'object' => 'whatsapp_business_account',
+            'entry' => [[
+                'id' => 'WHATSAPP_BA_1',
+                'changes' => [['field' => 'other', 'value' => []]],
+            ]],
+        ]);
+
+        $request = $this->factory->createServerRequest('POST', '/webhooks/whatsapp')
+            ->withBody($this->factory->createStream($body));
+
+        $this->assertSame([], $this->adapter->parseBatchedWebhook($request));
     }
 }

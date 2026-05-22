@@ -28,20 +28,27 @@ new WhatsAppAdapter(
 `whatsapp:{phoneNumberId}:{fromNumber}` — per-user thread based on sender's phone number
 
 ## contracts implemented
+- `HandlesSlashCommands` — `parseSlashCommand()` for messages starting with `/`
 - `HandlesReactions` — `parseReaction()` for reaction webhook events
 - `HandlesStatuses` — `parseStatus()` for message delivered/read statuses
+- `HandlesBatchedWebhooks` — `parseBatchedWebhook()` for multiple events per request
 - `AdapterHasMessagingWindow` — 24h messaging window with per-user tracking key
 
 ## webhook flow
 1. `verifyWebhook` — responds to `hub.verify_token` challenge; verifies request signature
 2. `parseWebhook` — extracts text, interactive replies, button responses, template sends
+3. `parseSlashCommand` — extracts messages starting with `/`
+4. `parseBatchedWebhook` — processes multiple events (messages, reactions, statuses) in single payload
 
 ## features
 - Send text, interactive buttons, lists, templates
 - Mark messages as read
 - Typing indicators (not natively supported — sends read receipts instead)
+- Slash commands (`/command`) with arguments
+- Reactions (emoji react/unreact)
 - Fetch messages from webhook payload only (no history API)
 - Streaming: concatenates and sends as single message
+- Batched webhook support (multiple events per request)
 
 ## config (laravel)
 ```php
