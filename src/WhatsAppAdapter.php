@@ -11,10 +11,12 @@ use BootDesk\ChatSDK\Core\Contracts\AdapterHasMessagingWindow;
 use BootDesk\ChatSDK\Core\Contracts\FileUploadConverter;
 use BootDesk\ChatSDK\Core\Contracts\FormatConverter;
 use BootDesk\ChatSDK\Core\Contracts\HandlesBatchedWebhooks;
+use BootDesk\ChatSDK\Core\Contracts\HandlesMessageCosts;
 use BootDesk\ChatSDK\Core\Contracts\HandlesReactions;
 use BootDesk\ChatSDK\Core\Contracts\HandlesSlashCommands;
 use BootDesk\ChatSDK\Core\Contracts\HandlesStatuses;
 use BootDesk\ChatSDK\Core\Contracts\HasAuthorInfo;
+use BootDesk\ChatSDK\Core\Contracts\RequiresAsyncResponse;
 use BootDesk\ChatSDK\Core\Contracts\StateAdapter;
 use BootDesk\ChatSDK\Core\Exceptions\AdapterException;
 use BootDesk\ChatSDK\Core\Exceptions\AuthenticationException;
@@ -34,7 +36,7 @@ use Psr\Http\Client\ClientInterface;
 use Psr\Http\Message\ResponseInterface;
 use Psr\Http\Message\ServerRequestInterface;
 
-class WhatsAppAdapter implements Adapter, AdapterHasMessagingWindow, HandlesBatchedWebhooks, HandlesReactions, HandlesSlashCommands, HandlesStatuses, HasAuthorInfo
+class WhatsAppAdapter implements Adapter, AdapterHasMessagingWindow, HandlesBatchedWebhooks, HandlesMessageCosts, HandlesReactions, HandlesSlashCommands, HandlesStatuses, HasAuthorInfo, RequiresAsyncResponse
 {
     protected ?string $botUserId = null;
 
@@ -206,6 +208,55 @@ class WhatsAppAdapter implements Adapter, AdapterHasMessagingWindow, HandlesBatc
                         'timestamp' => (int) ($status['timestamp'] ?? 0),
                         'raw' => $payload,
                         'originId' => null,
+                    ];
+                }
+            }
+        }
+
+        return null;
+    }
+
+    public function parseMessageCost(ServerRequestInterface $request): ?array
+    {
+        $body = (string) $request->getBody();
+        $payload = json_decode($body, true);
+
+        if (! is_array($payload)) {
+            return null;
+        }
+
+        foreach ($payload['entry'] ?? [] as $entry) {
+            foreach ($entry['changes'] ?? [] as $change) {
+                if (($change['field'] ?? '') !== 'messages') {
+                    continue;
+                }
+
+                $value = $change['value'] ?? [];
+                $phoneNumberId = $value['metadata']['phone_number_id'] ?? $this->phoneNumberId;
+
+                foreach ($value['statuses'] ?? [] as $status) {
+                    $pricing = $status['pricing'] ?? null;
+                    if ($pricing === null) {
+                        continue;
+                    }
+
+                    $recipientId = $status['recipient_id'] ?? '';
+                    $threadId = $this->encodeThreadId([
+                        'phoneNumberId' => $phoneNumberId,
+                        'userWaId' => $recipientId,
+                    ]);
+
+                    return [
+                        'messageIds' => [$status['id'] ?? ''],
+                        'threadId' => $threadId,
+                        'userId' => $recipientId,
+                        'price' => null,
+                        'raw' => [
+                            'pricing' => $pricing,
+                            'status' => $status['status'] ?? null,
+                            'timestamp' => $status['timestamp'] ?? null,
+                        ],
+                        'originId' => $entry['id'] ?? null,
                     ];
                 }
             }
@@ -400,28 +451,46 @@ class WhatsAppAdapter implements Adapter, AdapterHasMessagingWindow, HandlesBatc
                 // Process statuses
                 foreach ($value['statuses'] ?? [] as $status) {
                     $statusType = $status['status'] ?? '';
-                    if (! in_array($statusType, ['delivered', 'read', 'failed'], true)) {
-                        continue;
-                    }
-
                     $recipientId = $status['recipient_id'] ?? '';
                     $threadId = $this->encodeThreadId([
                         'phoneNumberId' => $phoneNumberId,
                         'userWaId' => $recipientId,
                     ]);
 
-                    $events[] = new WebhookEvent(
-                        type: WebhookEvent::TYPE_STATUS,
-                        threadId: $threadId,
-                        payload: [
-                            'type' => $statusType,
-                            'messageIds' => [$status['id'] ?? ''],
-                            'userId' => $recipientId,
-                            'timestamp' => (int) ($status['timestamp'] ?? 0),
-                            'raw' => $payload,
-                        ],
-                        originId: $originId,
-                    );
+                    if (in_array($statusType, ['delivered', 'read', 'failed'], true)) {
+                        $events[] = new WebhookEvent(
+                            type: WebhookEvent::TYPE_STATUS,
+                            threadId: $threadId,
+                            payload: [
+                                'type' => $statusType,
+                                'messageIds' => [$status['id'] ?? ''],
+                                'userId' => $recipientId,
+                                'timestamp' => (int) ($status['timestamp'] ?? 0),
+                                'raw' => $payload,
+                            ],
+                            originId: $originId,
+                        );
+                    }
+
+                    // Emit cost event if pricing data is present (independent of status type)
+                    $pricing = $status['pricing'] ?? null;
+                    if ($pricing !== null) {
+                        $events[] = new WebhookEvent(
+                            type: WebhookEvent::TYPE_MESSAGE_COST,
+                            threadId: $threadId,
+                            payload: [
+                                'messageIds' => [$status['id'] ?? ''],
+                                'userId' => $recipientId,
+                                'price' => null,
+                                'raw' => [
+                                    'pricing' => $pricing,
+                                    'status' => $statusType,
+                                    'timestamp' => $status['timestamp'] ?? null,
+                                ],
+                            ],
+                            originId: $originId,
+                        );
+                    }
                 }
             }
         }

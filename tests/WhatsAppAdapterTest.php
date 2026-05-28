@@ -1171,4 +1171,237 @@ class WhatsAppAdapterTest extends TestCase
 
         $this->assertSame([], $this->adapter->parseBatchedWebhook($request));
     }
+
+    public function test_parse_batched_status_with_pricing_emits_cost_event(): void
+    {
+        $body = json_encode([
+            'object' => 'whatsapp_business_account',
+            'entry' => [[
+                'id' => 'WHATSAPP_BA_1',
+                'changes' => [[
+                    'field' => 'messages',
+                    'value' => [
+                        'messaging_product' => 'whatsapp',
+                        'metadata' => ['display_phone_number' => '+15551234567', 'phone_number_id' => 'phone123'],
+                        'statuses' => [[
+                            'id' => 'wamid.sent123',
+                            'status' => 'sent',
+                            'timestamp' => '1750030073',
+                            'recipient_id' => '16505551234',
+                            'conversation' => [
+                                'id' => 'conv123',
+                                'expiration_timestamp' => '1750116480',
+                                'origin' => ['type' => 'marketing'],
+                            ],
+                            'pricing' => [
+                                'billable' => true,
+                                'pricing_model' => 'PMP',
+                                'type' => 'regular',
+                                'category' => 'marketing',
+                            ],
+                        ]],
+                    ],
+                ]],
+            ]],
+        ]);
+
+        $request = $this->factory->createServerRequest('POST', '/webhooks/whatsapp')
+            ->withBody($this->factory->createStream($body));
+
+        $events = $this->adapter->parseBatchedWebhook($request);
+
+        // sent status without pricing category → no status event, but cost event still fires
+        $this->assertCount(1, $events);
+        $this->assertSame('message_cost', $events[0]->type);
+        $this->assertSame('whatsapp:phone123:16505551234', $events[0]->threadId);
+        $this->assertSame('WHATSAPP_BA_1', $events[0]->originId);
+        $this->assertSame(['wamid.sent123'], $events[0]->payload['messageIds']);
+        $this->assertSame('16505551234', $events[0]->payload['userId']);
+        $this->assertNull($events[0]->payload['price']);
+        $this->assertSame('marketing', $events[0]->payload['raw']['pricing']['category']);
+        $this->assertTrue($events[0]->payload['raw']['pricing']['billable']);
+        $this->assertSame('PMP', $events[0]->payload['raw']['pricing']['pricing_model']);
+    }
+
+    public function test_parse_batched_delivered_with_pricing_emits_both_events(): void
+    {
+        $body = json_encode([
+            'object' => 'whatsapp_business_account',
+            'entry' => [[
+                'id' => 'WHATSAPP_BA_1',
+                'changes' => [[
+                    'field' => 'messages',
+                    'value' => [
+                        'messaging_product' => 'whatsapp',
+                        'metadata' => ['display_phone_number' => '+15551234567', 'phone_number_id' => 'phone123'],
+                        'statuses' => [[
+                            'id' => 'wamid.delivered456',
+                            'status' => 'delivered',
+                            'timestamp' => '1750030080',
+                            'recipient_id' => '16505551234',
+                            'pricing' => [
+                                'billable' => false,
+                                'pricing_model' => 'PMP',
+                                'type' => 'free',
+                                'category' => 'service',
+                            ],
+                        ]],
+                    ],
+                ]],
+            ]],
+        ]);
+
+        $request = $this->factory->createServerRequest('POST', '/webhooks/whatsapp')
+            ->withBody($this->factory->createStream($body));
+
+        $events = $this->adapter->parseBatchedWebhook($request);
+
+        $this->assertCount(2, $events);
+        $this->assertSame('status', $events[0]->type);
+        $this->assertSame('delivered', $events[0]->payload['type']);
+        $this->assertSame('message_cost', $events[1]->type);
+        $this->assertNull($events[1]->payload['price']);
+        $this->assertSame('service', $events[1]->payload['raw']['pricing']['category']);
+    }
+
+    public function test_parse_batched_status_without_pricing_emits_only_status(): void
+    {
+        $body = json_encode([
+            'object' => 'whatsapp_business_account',
+            'entry' => [[
+                'id' => 'WHATSAPP_BA_1',
+                'changes' => [[
+                    'field' => 'messages',
+                    'value' => [
+                        'messaging_product' => 'whatsapp',
+                        'metadata' => ['display_phone_number' => '+15551234567', 'phone_number_id' => 'phone123'],
+                        'statuses' => [[
+                            'id' => 'wamid.read789',
+                            'status' => 'read',
+                            'timestamp' => '1750030090',
+                            'recipient_id' => '16505551234',
+                        ]],
+                    ],
+                ]],
+            ]],
+        ]);
+
+        $request = $this->factory->createServerRequest('POST', '/webhooks/whatsapp')
+            ->withBody($this->factory->createStream($body));
+
+        $events = $this->adapter->parseBatchedWebhook($request);
+
+        $this->assertCount(1, $events);
+        $this->assertSame('status', $events[0]->type);
+        $this->assertSame('read', $events[0]->payload['type']);
+    }
+
+    public function test_parse_message_cost_with_pricing(): void
+    {
+        $body = json_encode([
+            'entry' => [[
+                'id' => 'WHATSAPP_BA_1',
+                'changes' => [[
+                    'field' => 'messages',
+                    'value' => [
+                        'metadata' => ['phone_number_id' => 'phone123'],
+                        'statuses' => [[
+                            'id' => 'wamid.sent_cost',
+                            'status' => 'sent',
+                            'timestamp' => '1750030073',
+                            'recipient_id' => '16505551234',
+                            'pricing' => [
+                                'billable' => true,
+                                'pricing_model' => 'PMP',
+                                'category' => 'marketing',
+                            ],
+                        ]],
+                    ],
+                ]],
+            ]],
+        ]);
+
+        $request = $this->factory->createServerRequest('POST', '/webhooks/whatsapp')
+            ->withBody($this->factory->createStream($body));
+
+        $result = $this->adapter->parseMessageCost($request);
+
+        $this->assertNotNull($result);
+        $this->assertSame(['wamid.sent_cost'], $result['messageIds']);
+        $this->assertSame('whatsapp:phone123:16505551234', $result['threadId']);
+        $this->assertSame('16505551234', $result['userId']);
+        $this->assertNull($result['price']);
+        $this->assertSame('marketing', $result['raw']['pricing']['category']);
+        $this->assertTrue($result['raw']['pricing']['billable']);
+        $this->assertSame('WHATSAPP_BA_1', $result['originId']);
+    }
+
+    public function test_parse_message_cost_without_pricing(): void
+    {
+        $body = json_encode([
+            'entry' => [[
+                'changes' => [[
+                    'field' => 'messages',
+                    'value' => [
+                        'metadata' => ['phone_number_id' => 'phone123'],
+                        'statuses' => [[
+                            'id' => 'wamid.no_pricing',
+                            'status' => 'delivered',
+                            'recipient_id' => '16505551234',
+                        ]],
+                    ],
+                ]],
+            ]],
+        ]);
+
+        $request = $this->factory->createServerRequest('POST', '/webhooks/whatsapp')
+            ->withBody($this->factory->createStream($body));
+
+        $this->assertNull($this->adapter->parseMessageCost($request));
+    }
+
+    public function test_parse_message_cost_invalid_json(): void
+    {
+        $request = $this->factory->createServerRequest('POST', '/webhooks/whatsapp')
+            ->withBody($this->factory->createStream('invalid'));
+
+        $this->assertNull($this->adapter->parseMessageCost($request));
+    }
+
+    public function test_parse_message_cost_no_statuses(): void
+    {
+        $body = json_encode([
+            'entry' => [[
+                'changes' => [[
+                    'field' => 'messages',
+                    'value' => [
+                        'metadata' => ['phone_number_id' => 'phone123'],
+                        'messages' => [['from' => '16505551234', 'id' => 'm1', 'text' => ['body' => 'hi']]],
+                    ],
+                ]],
+            ]],
+        ]);
+
+        $request = $this->factory->createServerRequest('POST', '/webhooks/whatsapp')
+            ->withBody($this->factory->createStream($body));
+
+        $this->assertNull($this->adapter->parseMessageCost($request));
+    }
+
+    public function test_parse_message_cost_not_messages_field(): void
+    {
+        $body = json_encode([
+            'entry' => [[
+                'changes' => [[
+                    'field' => 'other',
+                    'value' => ['statuses' => [['pricing' => ['category' => 'marketing']]]],
+                ]],
+            ]],
+        ]);
+
+        $request = $this->factory->createServerRequest('POST', '/webhooks/whatsapp')
+            ->withBody($this->factory->createStream($body));
+
+        $this->assertNull($this->adapter->parseMessageCost($request));
+    }
 }

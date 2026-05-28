@@ -31,6 +31,7 @@ new WhatsAppAdapter(
 - `HandlesSlashCommands` — `parseSlashCommand()` for messages starting with `/`
 - `HandlesReactions` — `parseReaction()` for reaction webhook events
 - `HandlesStatuses` — `parseStatus()` for message delivered/read statuses
+- `HandlesMessageCosts` — `parseMessageCost()` for pricing metadata from status webhooks (no monetary amounts, `price: null`)
 - `HandlesBatchedWebhooks` — `parseBatchedWebhook()` for multiple events per request
 - `AdapterHasMessagingWindow` — 24h messaging window with per-user tracking key
 
@@ -38,7 +39,8 @@ new WhatsAppAdapter(
 1. `verifyWebhook` — responds to `hub.verify_token` challenge; verifies request signature
 2. `parseWebhook` — extracts text, interactive replies, button responses, template sends
 3. `parseSlashCommand` — extracts messages starting with `/`
-4. `parseBatchedWebhook` — processes multiple events (messages, reactions, statuses) in single payload
+4. `parseMessageCost` — extracts pricing metadata (category, billable) from status webhooks
+5. `parseBatchedWebhook` — processes multiple events (messages, reactions, statuses, message_cost) in single payload
 
 ## features
 - Send text, interactive buttons, lists, templates
