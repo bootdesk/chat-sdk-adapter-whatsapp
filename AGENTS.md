@@ -4,7 +4,7 @@ WhatsApp Cloud API adapter for bootdesk/chat-sdk-core. Namespace: `BootDesk\Chat
 
 ## files
 - `WhatsAppAdapter` — implements `Adapter` using WhatsApp Business Cloud API
-- `WhatsAppFormatConverter` — WhatsApp text ↔ CommonMark AST
+- `WhatsAppFormatConverter` — WhatsApp text ↔ CommonMark AST. Uses `*bold*`, `_italic_`, `~strikethrough~`, `` `inline code` ``, ``` ```block``` ```, `*`/`-` bullet lists, `1.` numbered lists, `> quotes`. `renderPostable()` converts standard markdown to WhatsApp format.
 - `WhatsAppCards` — Card model → WhatsApp Interactive Reply buttons / List sections
 - `WhatsAppTemplate` — WhatsApp Message Template builder (for template messages)
 - `WhatsAppWebhookVerifier` — verifies webhook signature + verify_token challenge

@@ -2,6 +2,7 @@
 
 namespace BootDesk\ChatSDK\WhatsApp\Tests;
 
+use BootDesk\ChatSDK\Core\Attachment;
 use BootDesk\ChatSDK\Core\Cards\Button;
 use BootDesk\ChatSDK\Core\Cards\Card;
 use BootDesk\ChatSDK\Core\Chat;
@@ -197,8 +198,9 @@ class WhatsAppAdapterTest extends TestCase
                         'messages' => [[
                             'from' => '999',
                             'id' => 'wamid.reply1',
+                            'context' => ['id' => 'wamid.context123'],
                             'type' => 'interactive',
-                            'interactive' => ['type' => 'button_reply', 'button_reply' => ['id' => 'chat:yes', 'title' => 'Yes']],
+                            'interactive' => ['type' => 'button_reply', 'button_reply' => ['id' => 'chat:{"a":"order_confirm"}', 'title' => 'Yes']],
                             'timestamp' => '1700000000',
                         ]],
                     ],
@@ -211,8 +213,14 @@ class WhatsAppAdapterTest extends TestCase
             ->withHeader('x-hub-signature-256', $signature)
             ->withBody($this->factory->createStream($body));
 
-        $message = $this->adapter->parseWebhook($request);
-        $this->assertSame('Yes', $message->text);
+        $events = $this->adapter->parseBatchedWebhook($request);
+
+        $this->assertCount(1, $events);
+        $this->assertSame('action', $events[0]->type);
+        $this->assertSame('order_confirm', $events[0]->payload['actionId']);
+        $this->assertNull($events[0]->payload['value']);
+        $this->assertSame('wamid.context123', $events[0]->payload['messageId']);
+        $this->assertSame('whatsapp:phone123:999', $events[0]->threadId);
     }
 
     public function test_post_message(): void
@@ -1403,5 +1411,56 @@ class WhatsAppAdapterTest extends TestCase
             ->withBody($this->factory->createStream($body));
 
         $this->assertNull($this->adapter->parseMessageCost($request));
+    }
+
+    public function test_post_with_attachment_converts_markdown_in_caption(): void
+    {
+        $capturedBody = '';
+
+        $mockClient = new class($this->factory, $capturedBody) implements ClientInterface
+        {
+            private Psr17Factory $factory;
+
+            private string $capturedBody;
+
+            public function __construct(Psr17Factory $factory, string &$capturedBody)
+            {
+                $this->factory = $factory;
+                $this->capturedBody = &$capturedBody;
+            }
+
+            public function sendRequest(RequestInterface $request): ResponseInterface
+            {
+                $this->capturedBody = (string) $request->getBody();
+
+                return $this->factory->createResponse(200)->withBody(
+                    $this->factory->createStream(json_encode([
+                        'messaging_product' => 'whatsapp',
+                        'contacts' => [['input' => '1234567890', 'wa_id' => '1234567890']],
+                        'messages' => [['id' => 'wamid.test']],
+                    ]))
+                );
+            }
+        };
+
+        $adapter = new WhatsAppAdapter(
+            accessToken: 'test_token',
+            phoneNumberId: 'phone123',
+            appSecret: 'my_app_secret',
+            verifyToken: 'my_verify_token',
+            httpClient: $mockClient,
+            psrFactory: $this->factory,
+        );
+
+        $adapter->postMessage(
+            'whatsapp:phone123:5511999999999',
+            new PostableMessage(
+                content: '**bold** _italic_ ~strike~ `code`',
+                attachments: [new Attachment(url: 'https://example.com/photo.jpg', type: 'image')],
+            )
+        );
+
+        $body = json_decode($capturedBody, true);
+        $this->assertSame('*bold* _italic_ ~strike~ `code`', $body['image']['caption']);
     }
 }

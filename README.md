@@ -52,6 +52,10 @@ The `ChatServiceProvider` auto-binds `Psr\Http\Client\ClientInterface` to `Guzzl
 $adapter->postMessage('whatsapp:+15551234567', 'Hello from laravel-bootdesk!');
 ```
 
+## Text Formatting
+
+WhatsApp supports `*bold*`, `_italic_`, `~strikethrough~`, `` `monospace` ``, ``` ```code blocks``` ```, bullet lists (`*`/`-`), numbered lists (`1.`), and quotes (`>`). The SDK's `WhatsAppFormatConverter` automatically converts standard markdown (`**bold**`, `~~strike~~`) to WhatsApp format when sending, and converts WhatsApp syntax back to standard markdown when receiving.
+
 ## Template Messages
 
 WhatsApp supports pre-approved message templates for notifications, alerts, and marketing. Send them via `PostableMessage::template()`:

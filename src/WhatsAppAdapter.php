@@ -4,6 +4,7 @@ namespace BootDesk\ChatSDK\WhatsApp;
 
 use BootDesk\ChatSDK\Core\Attachment;
 use BootDesk\ChatSDK\Core\Author;
+use BootDesk\ChatSDK\Core\Cards\Card;
 use BootDesk\ChatSDK\Core\ChannelInfo;
 use BootDesk\ChatSDK\Core\Chat;
 use BootDesk\ChatSDK\Core\Contracts\Adapter;
@@ -348,6 +349,11 @@ class WhatsAppAdapter implements Adapter, AdapterHasMessagingWindow, HandlesBatc
                         continue;
                     }
 
+                    // Skip interactive messages (button_reply/list_reply) — handled as actions via batched path
+                    if (($msg['type'] ?? '') === 'interactive') {
+                        continue;
+                    }
+
                     return $this->parseInboundMessage($msg, $contacts[0] ?? null, $phoneNumberId, $body, $originId);
                 }
             }
@@ -413,8 +419,36 @@ class WhatsAppAdapter implements Adapter, AdapterHasMessagingWindow, HandlesBatc
 
                         $rawText = $msg['text']['body'] ?? '';
 
-                        // Check if this is a slash command
-                        if ($rawText !== '' && $rawText[0] === '/') {
+                        // Check if this is an interactive button/list reply (action)
+                        $msgType = $msg['type'] ?? '';
+                        if ($msgType === 'interactive') {
+                            $interactiveType = $msg['interactive']['type'] ?? '';
+                            if ($interactiveType === 'button_reply' || $interactiveType === 'list_reply') {
+                                $replyData = $msg['interactive'][$interactiveType] ?? [];
+                                $callbackId = $replyData['id'] ?? '';
+                                $decoded = WhatsAppCards::decodeCallbackData($callbackId);
+
+                                $author = $this->createAuthor($msg['from'], $contacts[0] ?? null);
+
+                                $events[] = new WebhookEvent(
+                                    type: WebhookEvent::TYPE_ACTION,
+                                    threadId: $threadId,
+                                    payload: [
+                                        'author' => $author,
+                                        'actionId' => $decoded['actionId'],
+                                        'value' => $decoded['value'],
+                                        'messageId' => $msg['context']['id'] ?? $msg['id'] ?? '',
+                                        'userId' => $msg['from'],
+                                        'isBot' => false,
+                                        'isMe' => false,
+                                        'triggerId' => null,
+                                        'raw' => $payload,
+                                        'callbackQueryId' => null,
+                                    ],
+                                    originId: $originId,
+                                );
+                            }
+                        } elseif ($rawText !== '' && $rawText[0] === '/') {
                             $parts = explode(' ', $rawText, 2);
                             $command = $parts[0];
                             $text = $parts[1] ?? '';
@@ -541,7 +575,7 @@ class WhatsAppAdapter implements Adapter, AdapterHasMessagingWindow, HandlesBatc
         // Attachments take priority
         if ($message->attachments !== []) {
             $att = $message->attachments[0];
-            $text = $message->getTextContent();
+            $text = $this->formatConverter->renderPostable($message);
             $params = [
                 'messaging_product' => 'whatsapp',
                 'type' => match ($att->type) {
@@ -569,6 +603,11 @@ class WhatsAppAdapter implements Adapter, AdapterHasMessagingWindow, HandlesBatc
             return new SentMessage(id: $msgId, threadId: $threadId);
         }
 
+        // Card messages — multi-message orchestration
+        if ($message->isCard()) {
+            return $this->sendCardMessage($threadId, $message);
+        }
+
         $params = $this->buildMessageParams($message);
         $params = $this->addRecipientParam($params, $decoded['userWaId']);
         $params['messaging_product'] = 'whatsapp';
@@ -581,6 +620,108 @@ class WhatsAppAdapter implements Adapter, AdapterHasMessagingWindow, HandlesBatc
             id: $msgId,
             threadId: $threadId,
         );
+    }
+
+    private function sendCardMessage(string $threadId, PostableMessage $message): SentMessage
+    {
+        $decoded = $this->decodeThreadId($threadId);
+        $card = $message->content;
+        $additionalMessages = [];
+        $mainId = null;
+        $recipient = $decoded['userWaId'];
+
+        // 1. Send image as separate media message
+        $mediaParams = WhatsAppCards::toMediaMessage($card);
+        if ($mediaParams !== null) {
+            // Use bolded header as caption only — body follows as separate message
+            $caption = '';
+            if ($card->getHeader() !== null) {
+                $caption = '*'.$card->getHeader().'*';
+            }
+            if ($caption !== '') {
+                $mediaParams['image']['caption'] = $caption;
+            }
+
+            $mediaParams = $this->addRecipientParam([
+                'messaging_product' => 'whatsapp',
+                ...$mediaParams,
+            ], $recipient);
+
+            try {
+                $response = $this->apiCall("/{$this->phoneNumberId}/messages", $mediaParams);
+                $mainId = $response['messages'][0]['id'] ?? null;
+            } catch (\Exception) {
+                // Image send failed — continue with text
+            }
+        }
+
+        // 2. Build interactive or text params
+        $buttons = $card->getButtons();
+        $linkButtons = $card->getLinkButtons();
+
+        if ($buttons !== [] && count($buttons) <= 3) {
+            // Reply buttons via interactive message (header+buttons excluded from body)
+            $interactive = WhatsAppCards::toInteractiveMessage($card);
+            $params = $this->addRecipientParam([
+                'messaging_product' => 'whatsapp',
+                'type' => 'interactive',
+                'interactive' => $interactive,
+            ], $recipient);
+        } elseif ($buttons === [] && count($linkButtons) === 1) {
+            // Single link button → CTA URL interactive (body excludes header + interactive)
+            $cta = self::buildCtaUrlInteractive($card);
+            $params = $this->addRecipientParam([
+                'messaging_product' => 'whatsapp',
+                'type' => 'interactive',
+                'interactive' => $cta,
+            ], $recipient);
+        } else {
+            // Fallback to text (body excludes header, includes links/buttons as inline text)
+            $text = WhatsAppCards::cardToText($card, includeHeader: false);
+            $params = $this->addRecipientParam([
+                'messaging_product' => 'whatsapp',
+                'type' => 'text',
+                'text' => ['body' => $text],
+            ], $recipient);
+        }
+
+        $response = $this->apiCall("/{$this->phoneNumberId}/messages", $params);
+        $msgId = $response['messages'][0]['id'] ?? uniqid('wa_', true);
+
+        if ($mainId === null) {
+            $mainId = $msgId;
+        } else {
+            $additionalMessages[] = new SentMessage(
+                id: $msgId,
+                threadId: $threadId,
+            );
+        }
+
+        return new SentMessage(
+            id: $mainId,
+            threadId: $threadId,
+            additionalMessages: $additionalMessages,
+        );
+    }
+
+    private function buildCtaUrlInteractive(Card $card): array
+    {
+        $linkButtons = $card->getLinkButtons();
+        $lb = $linkButtons[0];
+
+        $body = WhatsAppCards::cardToText($card, includeHeader: false, excludeInteractive: true);
+
+        return [
+            'type' => 'cta_url',
+            'body' => ['text' => $body ?: 'Open the link below'],
+            'action' => [
+                'name' => 'cta_url',
+                'parameters' => [
+                    'display_text' => mb_substr($lb->label, 0, 20),
+                    'url' => $lb->url,
+                ],
+            ],
+        ];
     }
 
     public function editMessage(string $threadId, string $messageId, PostableMessage $message): SentMessage
@@ -858,15 +999,8 @@ class WhatsAppAdapter implements Adapter, AdapterHasMessagingWindow, HandlesBatc
         }
 
         if ($message->isCard()) {
-            $interactive = WhatsAppCards::toInteractiveMessage($message->content);
-
-            if ($interactive !== null) {
-                return [
-                    'type' => 'interactive',
-                    'interactive' => $interactive,
-                ];
-            }
-
+            // Cards are handled in postMessage() via sendCardMessage().
+            // This fallback is for direct callers only.
             return [
                 'type' => 'text',
                 'text' => ['body' => WhatsAppCards::cardToText($message->content)],

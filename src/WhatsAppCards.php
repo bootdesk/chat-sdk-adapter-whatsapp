@@ -2,6 +2,7 @@
 
 namespace BootDesk\ChatSDK\WhatsApp;
 
+use BootDesk\ChatSDK\Core\Cards\Button;
 use BootDesk\ChatSDK\Core\Cards\Card;
 use BootDesk\ChatSDK\Core\Cards\Divider;
 use BootDesk\ChatSDK\Core\Cards\Image;
@@ -50,7 +51,7 @@ class WhatsAppCards
             ];
         }
 
-        $body = self::buildBodyText($card);
+        $body = self::buildBodyText($card, excludeInteractive: true);
 
         $interactive = [
             'type' => 'button',
@@ -65,16 +66,11 @@ class WhatsAppCards
         return $interactive;
     }
 
-    public static function cardToText(Card $card): string
+    public static function cardToText(Card $card, bool $includeHeader = true, bool $excludeInteractive = false): string
     {
         $lines = [];
 
-        if ($card->getImageUrl() !== null) {
-            $lines[] = $card->getImageUrl();
-            $lines[] = '';
-        }
-
-        if ($card->getHeader() !== null) {
+        if ($includeHeader && $card->getHeader() !== null) {
             $lines[] = '*'.$card->getHeader().'*';
         }
 
@@ -86,11 +82,13 @@ class WhatsAppCards
             } elseif ($child instanceof Image) {
                 $lines[] = $child->alt !== '' ? "{$child->alt}: {$child->url}" : $child->url;
             } elseif ($child instanceof Link) {
-                $lines[] = "[{$child->label}]({$child->url})";
+                $lines[] = "{$child->label}: {$child->url}";
             } elseif ($child instanceof Table) {
                 $lines[] = self::renderTableAsText($child);
             } elseif ($child instanceof LinkButton) {
-                $lines[] = "[{$child->label}]({$child->url})";
+                if (! $excludeInteractive) {
+                    $lines[] = "{$child->label}: {$child->url}";
+                }
             }
         }
 
@@ -104,14 +102,39 @@ class WhatsAppCards
             }
         }
 
-        $allButtons = array_merge($card->getButtons(), $card->getLinkButtons());
-        if ($lines !== [] && $allButtons !== []) {
-            $lines[] = '';
-            $buttonTexts = array_map(fn ($b): string => "[{$b->label}]", $allButtons);
-            $lines[] = implode(' | ', $buttonTexts);
+        if (! $excludeInteractive) {
+            $allButtons = $card->getButtons();
+            if ($lines !== [] && $allButtons !== []) {
+                $lines[] = '';
+                $lines[] = '---';
+                $buttonTexts = array_map(fn (Button $b): string => "[ {$b->label} ]", $allButtons);
+                $lines[] = implode('  ', $buttonTexts);
+            }
         }
 
         return implode("\n", $lines);
+    }
+
+    public static function toMediaMessage(Card $card): ?array
+    {
+        if ($card->getImageUrl() === null) {
+            return null;
+        }
+
+        $msg = [
+            'type' => 'image',
+            'image' => ['link' => $card->getImageUrl()],
+        ];
+
+        $caption = '';
+        if ($card->getHeader() !== null) {
+            $caption .= $card->getHeader();
+        }
+        if ($caption !== '') {
+            $msg['image']['caption'] = $caption;
+        }
+
+        return $msg;
     }
 
     public static function encodeCallbackData(string $actionId, ?string $value = null): string
@@ -147,7 +170,7 @@ class WhatsAppCards
         return ['actionId' => $data, 'value' => $data];
     }
 
-    private static function buildBodyText(Card $card): string
+    private static function buildBodyText(Card $card, bool $excludeInteractive = false): string
     {
         $parts = [];
 
@@ -161,7 +184,9 @@ class WhatsAppCards
             } elseif ($child instanceof Table) {
                 $parts[] = self::renderTableAsText($child);
             } elseif ($child instanceof LinkButton) {
-                $parts[] = "[{$child->label}]({$child->url})";
+                if (! $excludeInteractive) {
+                    $parts[] = "{$child->label}: {$child->url}";
+                }
             }
         }
 
@@ -217,22 +242,6 @@ class WhatsAppCards
 
     private static function renderTableAsText(Table $table): string
     {
-        $lines = [];
-        $lines[] = '| '.implode(' | ', $table->headers).' |';
-        $separators = [];
-        foreach (array_keys($table->headers) as $i) {
-            $align = $table->align[$i] ?? null;
-            $separators[] = match ($align?->value) {
-                'center' => ':---:',
-                'right' => '---:',
-                default => '---',
-            };
-        }
-        $lines[] = '| '.implode(' | ', $separators).' |';
-        foreach ($table->rows as $row) {
-            $lines[] = '| '.implode(' | ', $row).' |';
-        }
-
-        return implode("\n", $lines);
+        return "```\n".Table::renderAsText($table)."\n```";
     }
 }

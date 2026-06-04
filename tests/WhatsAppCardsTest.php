@@ -49,7 +49,7 @@ class WhatsAppCardsTest extends TestCase
         $text = WhatsAppCards::cardToText($card);
         $this->assertStringContainsString('*Deploy*', $text);
         $this->assertStringContainsString('Build passed', $text);
-        $this->assertStringContainsString('[Go]', $text);
+        $this->assertStringContainsString('[ Go ]', $text);
     }
 
     public function test_encode_decode_callback_data(): void
