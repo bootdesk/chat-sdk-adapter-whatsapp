@@ -883,7 +883,9 @@ class WhatsAppAdapter implements Adapter, AdapterHasMessagingWindow, HandlesBatc
             $name = $contact['profile']['name'] ?? $contact['profile']['username'] ?? null;
         }
 
-        return new Author(...$localizations, id: $userId, name: $name);
+        return (
+            new Author(id: $userId, name: $name)
+        )->withLocalizations(...$localizations);
     }
 
     protected function parseInboundMessage(array $msg, ?array $contact, string $phoneNumberId, string $rawBody, ?string $originId = null): Message
