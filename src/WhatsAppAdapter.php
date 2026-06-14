@@ -28,6 +28,7 @@ use BootDesk\ChatSDK\Core\LocalizationValue;
 use BootDesk\ChatSDK\Core\Message;
 use BootDesk\ChatSDK\Core\PostableMessage;
 use BootDesk\ChatSDK\Core\SentMessage;
+use BootDesk\ChatSDK\Core\Support\EmojiResolver;
 use BootDesk\ChatSDK\Core\Support\NullFileUploadConverter;
 use BootDesk\ChatSDK\Core\ThreadInfo;
 use BootDesk\ChatSDK\Core\UserInfo;
@@ -49,6 +50,8 @@ class WhatsAppAdapter implements Adapter, AdapterHasMessagingWindow, HandlesBatc
 
     protected FileUploadConverter $fileUploadConverter;
 
+    protected EmojiResolver $emojiResolver;
+
     public function __construct(
         protected readonly string $accessToken,
         protected readonly ClientInterface $httpClient,
@@ -58,9 +61,11 @@ class WhatsAppAdapter implements Adapter, AdapterHasMessagingWindow, HandlesBatc
         protected readonly string $apiUrl = 'https://graph.facebook.com/v21.0',
         protected readonly ?Psr17Factory $psrFactory = null,
         ?FileUploadConverter $fileUploadConverter = null,
+        ?EmojiResolver $emojiResolver = null,
     ) {
         $this->formatConverter = new WhatsAppFormatConverter;
         $this->fileUploadConverter = $fileUploadConverter ?? new NullFileUploadConverter;
+        $this->emojiResolver = $emojiResolver ?? EmojiResolver::default();
 
         if ($appSecret !== null && $verifyToken !== null) {
             $this->webhookVerifier = new WhatsAppWebhookVerifier($appSecret, $verifyToken);
@@ -155,7 +160,7 @@ class WhatsAppAdapter implements Adapter, AdapterHasMessagingWindow, HandlesBatc
 
                     return [
                         'author' => $author,
-                        'emoji' => $rawEmoji,
+                        'emoji' => $this->emojiResolver->fromGChat($rawEmoji),
                         'rawEmoji' => $rawEmoji,
                         'added' => $added,
                         'threadId' => $threadId,
@@ -402,7 +407,7 @@ class WhatsAppAdapter implements Adapter, AdapterHasMessagingWindow, HandlesBatc
                             threadId: $threadId,
                             payload: [
                                 'author' => $author,
-                                'emoji' => $rawEmoji,
+                                'emoji' => $this->emojiResolver->fromGChat($rawEmoji),
                                 'rawEmoji' => $rawEmoji,
                                 'added' => $rawEmoji !== '',
                                 'messageId' => $reaction['message_id'],
@@ -749,7 +754,7 @@ class WhatsAppAdapter implements Adapter, AdapterHasMessagingWindow, HandlesBatc
             'type' => 'reaction',
             'reaction' => [
                 'message_id' => $messageId,
-                'emoji' => $emoji,
+                'emoji' => $this->emojiResolver->toGChat($emoji),
             ],
         ], $decoded['userWaId']);
         $this->apiCall("/{$this->phoneNumberId}/messages", $params);

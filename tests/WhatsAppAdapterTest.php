@@ -462,7 +462,8 @@ class WhatsAppAdapterTest extends TestCase
 
         $this->assertCount(1, $events);
         $this->assertSame('reaction', $events[0]->type);
-        $this->assertSame('❤️', $events[0]->payload['emoji']);
+        $this->assertSame('heart', $events[0]->payload['emoji']);
+        $this->assertSame('❤️', $events[0]->payload['rawEmoji']);
         $this->assertTrue($events[0]->payload['added']);
         $this->assertSame('wamid.FAKE_MSG_ID_001', $events[0]->payload['messageId']);
         $this->assertSame('100000000000002', $events[0]->originId);
@@ -1141,7 +1142,8 @@ class WhatsAppAdapterTest extends TestCase
         $this->assertSame('hello', $events[0]->payload->text);
         $this->assertSame('WHATSAPP_BA_1', $events[0]->originId);
         $this->assertSame('reaction', $events[1]->type);
-        $this->assertSame('👍', $events[1]->payload['emoji']);
+        $this->assertSame('thumbs_up', $events[1]->payload['emoji']);
+        $this->assertSame('👍', $events[1]->payload['rawEmoji']);
         $this->assertSame('WHATSAPP_BA_1', $events[1]->originId);
         $this->assertSame('status', $events[2]->type);
         $this->assertSame('delivered', $events[2]->payload['type']);
