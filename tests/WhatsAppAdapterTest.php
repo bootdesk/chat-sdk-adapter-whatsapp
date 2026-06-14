@@ -7,6 +7,7 @@ use BootDesk\ChatSDK\Core\Cards\Button;
 use BootDesk\ChatSDK\Core\Cards\Card;
 use BootDesk\ChatSDK\Core\Chat;
 use BootDesk\ChatSDK\Core\Contracts\AdapterHasMessagingWindow;
+use BootDesk\ChatSDK\Core\Contracts\MustRehydrateAttachments;
 use BootDesk\ChatSDK\Core\Exceptions\AdapterException;
 use BootDesk\ChatSDK\Core\Exceptions\AuthenticationException;
 use BootDesk\ChatSDK\Core\PostableMessage;
@@ -18,6 +19,7 @@ use PHPUnit\Framework\TestCase;
 use Psr\Http\Client\ClientInterface;
 use Psr\Http\Message\RequestInterface;
 use Psr\Http\Message\ResponseInterface;
+use Psr\Http\Message\StreamInterface;
 
 class WhatsAppAdapterTest extends TestCase
 {
@@ -1464,5 +1466,184 @@ class WhatsAppAdapterTest extends TestCase
 
         $body = json_decode($capturedBody, true);
         $this->assertSame('*bold* _italic_ ~strike~ `code`', $body['image']['caption']);
+    }
+
+    public function test_adapter_implements_must_rehydrate_interface(): void
+    {
+        $this->assertInstanceOf(MustRehydrateAttachments::class, $this->adapter);
+    }
+
+    public function test_attachment_serialize_round_trip(): void
+    {
+        $attachment = new Attachment(
+            type: 'image',
+            url: null,
+            mimeType: 'image/jpeg',
+            fetchData: [$this->adapter, 'fetchMedia'],
+            fetchMetadata: ['media_id' => 'media123'],
+        );
+
+        $restored = unserialize(serialize($attachment));
+
+        $this->assertSame('image', $restored->type);
+        $this->assertNull($restored->url);
+        $this->assertSame('image/jpeg', $restored->mimeType);
+        $this->assertSame(['media_id' => 'media123'], $restored->fetchMetadata);
+        $this->assertNull($restored->fetchData);
+    }
+
+    public function test_rehydrate_restores_fetch_data(): void
+    {
+        $original = new Attachment(
+            type: 'video',
+            url: null,
+            mimeType: 'video/mp4',
+            fetchData: [$this->adapter, 'fetchMedia'],
+            fetchMetadata: ['media_id' => 'media456'],
+        );
+
+        $restored = unserialize(serialize($original));
+        $this->assertNull($restored->fetchData);
+
+        $rehydrated = $this->adapter->rehydrateAttachment($restored);
+
+        $this->assertSame('video', $rehydrated->type);
+        $this->assertSame('video/mp4', $rehydrated->mimeType);
+        $this->assertSame(['media_id' => 'media456'], $rehydrated->fetchMetadata);
+        $this->assertNotNull($rehydrated->fetchData);
+        $this->assertTrue(is_callable($rehydrated->fetchData));
+    }
+
+    public function test_rehydrate_missing_media_id_returns_same(): void
+    {
+        $attachment = new Attachment(
+            type: 'image',
+            url: null,
+            mimeType: 'image/jpeg',
+        );
+
+        $result = $this->adapter->rehydrateAttachment($attachment);
+
+        $this->assertSame($attachment, $result);
+    }
+
+    public function test_fetch_data_must_be_callable_or_null(): void
+    {
+        $this->expectException(\InvalidArgumentException::class);
+        $this->expectExceptionMessage('fetchData must be a callable or null');
+
+        new Attachment(
+            type: 'image',
+            url: null,
+            fetchData: 'not-a-callable',
+        );
+    }
+
+    public function test_fetch_media_happy_path(): void
+    {
+        $factory = new Psr17Factory;
+        $callCount = 0;
+
+        $mockClient = new class($factory, $callCount) implements ClientInterface
+        {
+            public function __construct(
+                private Psr17Factory $factory,
+                private int &$callCount,
+            ) {}
+
+            public function sendRequest(RequestInterface $request): ResponseInterface
+            {
+                $this->callCount++;
+
+                // First call: media info lookup
+                if ($this->callCount === 1) {
+                    return $this->factory->createResponse(200)->withBody(
+                        $this->factory->createStream(json_encode([
+                            'url' => 'https://lookaside.fbsbx.com/media/test',
+                            'mime_type' => 'image/jpeg',
+                        ]))
+                    );
+                }
+
+                // Second call: actual media download
+                return $this->factory->createResponse(200)->withBody(
+                    $this->factory->createStream('whatsapp-binary-data')
+                );
+            }
+        };
+
+        $adapter = new WhatsAppAdapter(
+            accessToken: 'test_token',
+            phoneNumberId: 'phone123',
+            httpClient: $mockClient,
+            psrFactory: $factory,
+        );
+
+        $attachment = new Attachment(
+            type: 'image',
+            url: null,
+            mimeType: 'image/jpeg',
+            fetchData: [$adapter, 'fetchMedia'],
+            fetchMetadata: ['media_id' => 'test_media_id'],
+        );
+
+        $rehydrated = $adapter->rehydrateAttachment($attachment);
+        $stream = $rehydrated->read();
+
+        $this->assertInstanceOf(StreamInterface::class, $stream);
+        $this->assertSame('whatsapp-binary-data', (string) $stream);
+        $this->assertSame(2, $callCount);
+    }
+
+    public function test_fetch_media_missing_media_id(): void
+    {
+        $attachment = new Attachment(
+            type: 'image',
+            url: null,
+            fetchData: [$this->adapter, 'fetchMedia'],
+            fetchMetadata: [],
+        );
+
+        $this->expectException(AdapterException::class);
+        $this->expectExceptionMessage('No media_id available for attachment');
+
+        $attachment->read();
+    }
+
+    public function test_fetch_media_http_error(): void
+    {
+        $factory = new Psr17Factory;
+        $mockClient = new class($factory) implements ClientInterface
+        {
+            public function __construct(private Psr17Factory $factory) {}
+
+            public function sendRequest(RequestInterface $request): ResponseInterface
+            {
+                return $this->factory->createResponse(400)->withBody(
+                    $this->factory->createStream(json_encode(['error' => ['code' => 400, 'message' => 'bad media id']]))
+                );
+            }
+        };
+
+        $adapter = new WhatsAppAdapter(
+            accessToken: 'test_token',
+            phoneNumberId: 'phone123',
+            httpClient: $mockClient,
+            psrFactory: $factory,
+        );
+
+        $attachment = new Attachment(
+            type: 'image',
+            url: null,
+            fetchData: [$adapter, 'fetchMedia'],
+            fetchMetadata: ['media_id' => 'bad_media_id'],
+        );
+
+        $rehydrated = $adapter->rehydrateAttachment($attachment);
+
+        $this->expectException(AdapterException::class);
+        $this->expectExceptionMessage('WhatsApp API returned HTTP 400');
+
+        $rehydrated->read();
     }
 }

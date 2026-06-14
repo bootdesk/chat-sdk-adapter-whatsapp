@@ -17,6 +17,7 @@ use BootDesk\ChatSDK\Core\Contracts\HandlesReactions;
 use BootDesk\ChatSDK\Core\Contracts\HandlesSlashCommands;
 use BootDesk\ChatSDK\Core\Contracts\HandlesStatuses;
 use BootDesk\ChatSDK\Core\Contracts\HasAuthorInfo;
+use BootDesk\ChatSDK\Core\Contracts\MustRehydrateAttachments;
 use BootDesk\ChatSDK\Core\Contracts\RequiresAsyncResponse;
 use BootDesk\ChatSDK\Core\Contracts\StateAdapter;
 use BootDesk\ChatSDK\Core\Exceptions\AdapterException;
@@ -37,8 +38,9 @@ use Nyholm\Psr7\Factory\Psr17Factory;
 use Psr\Http\Client\ClientInterface;
 use Psr\Http\Message\ResponseInterface;
 use Psr\Http\Message\ServerRequestInterface;
+use Psr\Http\Message\StreamInterface;
 
-class WhatsAppAdapter implements Adapter, AdapterHasMessagingWindow, HandlesBatchedWebhooks, HandlesMessageCosts, HandlesReactions, HandlesSlashCommands, HandlesStatuses, HasAuthorInfo, RequiresAsyncResponse
+class WhatsAppAdapter implements Adapter, AdapterHasMessagingWindow, HandlesBatchedWebhooks, HandlesMessageCosts, HandlesReactions, HandlesSlashCommands, HandlesStatuses, HasAuthorInfo, MustRehydrateAttachments, RequiresAsyncResponse
 {
     protected ?string $botUserId = null;
 
@@ -947,8 +949,10 @@ class WhatsAppAdapter implements Adapter, AdapterHasMessagingWindow, HandlesBatc
         if (isset($msg['image'])) {
             $attachments[] = new Attachment(
                 type: 'image',
+                url: null,
                 name: $msg['image']['caption'] ?? null,
                 mimeType: $msg['image']['mime_type'] ?? null,
+                fetchData: [$this, 'fetchMedia'],
                 fetchMetadata: ['media_id' => $msg['image']['id']],
             );
         }
@@ -956,8 +960,10 @@ class WhatsAppAdapter implements Adapter, AdapterHasMessagingWindow, HandlesBatc
         if (isset($msg['document'])) {
             $attachments[] = new Attachment(
                 type: 'file',
+                url: null,
                 name: $msg['document']['filename'] ?? null,
                 mimeType: $msg['document']['mime_type'] ?? null,
+                fetchData: [$this, 'fetchMedia'],
                 fetchMetadata: ['media_id' => $msg['document']['id']],
             );
         }
@@ -965,7 +971,9 @@ class WhatsAppAdapter implements Adapter, AdapterHasMessagingWindow, HandlesBatc
         if (isset($msg['audio'])) {
             $attachments[] = new Attachment(
                 type: 'audio',
+                url: null,
                 mimeType: $msg['audio']['mime_type'] ?? null,
+                fetchData: [$this, 'fetchMedia'],
                 fetchMetadata: ['media_id' => $msg['audio']['id']],
             );
         }
@@ -973,8 +981,10 @@ class WhatsAppAdapter implements Adapter, AdapterHasMessagingWindow, HandlesBatc
         if (isset($msg['video'])) {
             $attachments[] = new Attachment(
                 type: 'video',
+                url: null,
                 name: $msg['video']['caption'] ?? null,
                 mimeType: $msg['video']['mime_type'] ?? null,
+                fetchData: [$this, 'fetchMedia'],
                 fetchMetadata: ['media_id' => $msg['video']['id']],
             );
         }
@@ -1022,20 +1032,67 @@ class WhatsAppAdapter implements Adapter, AdapterHasMessagingWindow, HandlesBatc
         ];
     }
 
-    protected function apiCall(string $endpoint, array $params): array
+    public function fetchMedia(Attachment $attachment): StreamInterface
+    {
+        $mediaId = $attachment->fetchMetadata['media_id'] ?? null;
+
+        if ($mediaId === null || $mediaId === '') {
+            throw new AdapterException('No media_id available for attachment');
+        }
+
+        // Step 1: Get media download URL from WhatsApp API
+        $data = $this->apiCall("/{$mediaId}", method: 'GET');
+
+        if (! isset($data['url'])) {
+            throw new AdapterException('WhatsApp API did not return a media URL');
+        }
+
+        // Step 2: Download actual media binary
+        $raw = $this->apiCall('', method: 'GET', overrideUrl: $data['url'], returnStream: true);
+
+        return $raw['stream'];
+    }
+
+    public function rehydrateAttachment(Attachment $attachment): Attachment
+    {
+        $mediaId = $attachment->fetchMetadata['media_id'] ?? null;
+
+        if ($mediaId === null || $mediaId === '') {
+            return $attachment;
+        }
+
+        return $attachment->withFetchOptions(fetchData: [$this, 'fetchMedia'], fetchMetadata: ['media_id' => $mediaId]);
+    }
+
+    protected function apiCall(string $endpoint, array $params = [], string $method = 'POST', ?string $overrideUrl = null, bool $returnStream = false): array
     {
         $factory = $this->psrFactory ?? new Psr17Factory;
-        $url = "{$this->apiUrl}{$endpoint}";
+        $url = $overrideUrl ?? "{$this->apiUrl}{$endpoint}";
 
-        $body = json_encode(array_filter($params, fn ($v): bool => $v !== null));
-        $request = $factory->createRequest('POST', $url)
-            ->withHeader('Authorization', "Bearer {$this->accessToken}")
-            ->withHeader('Content-Type', 'application/json')
-            ->withBody($factory->createStream($body));
+        if ($method === 'GET') {
+            $request = $factory->createRequest('GET', $url)
+                ->withHeader('Authorization', "Bearer {$this->accessToken}");
+        } else {
+            $body = json_encode(array_filter($params, fn ($v): bool => $v !== null));
+            $request = $factory->createRequest('POST', $url)
+                ->withHeader('Authorization', "Bearer {$this->accessToken}")
+                ->withHeader('Content-Type', 'application/json')
+                ->withBody($factory->createStream($body));
+        }
 
         $psrResponse = $this->httpClient->sendRequest($request);
-        $responseBody = (string) $psrResponse->getBody();
+        $statusCode = $psrResponse->getStatusCode();
 
+        if ($statusCode < 200 || $statusCode >= 300) {
+            $responseBody = (string) $psrResponse->getBody();
+            throw new AdapterException("WhatsApp API returned HTTP {$statusCode}: {$responseBody}");
+        }
+
+        if ($returnStream) {
+            return ['stream' => $psrResponse->getBody(), 'status' => $statusCode];
+        }
+
+        $responseBody = (string) $psrResponse->getBody();
         $data = json_decode($responseBody, true);
 
         if (! is_array($data)) {

@@ -34,6 +34,7 @@ new WhatsAppAdapter(
 - `HandlesMessageCosts` — `parseMessageCost()` for pricing metadata from status webhooks (no monetary amounts, `price: null`)
 - `HandlesBatchedWebhooks` — `parseBatchedWebhook()` for multiple events per request
 - `AdapterHasMessagingWindow` — 24h messaging window with per-user tracking key
+- `MustRehydrateAttachments` — restores `Attachment::fetchData` after queue deserialization via 2-step media download (GET media info → GET binary)
 
 ## webhook flow
 1. `verifyWebhook` — responds to `hub.verify_token` challenge; verifies request signature
