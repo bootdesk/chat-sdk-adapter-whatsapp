@@ -22,6 +22,7 @@ use BootDesk\ChatSDK\Core\Contracts\RequiresAsyncResponse;
 use BootDesk\ChatSDK\Core\Contracts\StateAdapter;
 use BootDesk\ChatSDK\Core\Exceptions\AdapterException;
 use BootDesk\ChatSDK\Core\Exceptions\AuthenticationException;
+use BootDesk\ChatSDK\Core\Exceptions\UnsupportedOperationException;
 use BootDesk\ChatSDK\Core\FetchOptions;
 use BootDesk\ChatSDK\Core\FetchResult;
 use BootDesk\ChatSDK\Core\LocalizationType;
@@ -366,7 +367,7 @@ class WhatsAppAdapter implements Adapter, AdapterHasMessagingWindow, HandlesBatc
             }
         }
 
-        throw new AdapterException('No message found in WhatsApp webhook payload');
+        throw new UnsupportedOperationException('No message found in WhatsApp webhook payload');
     }
 
     public function parseBatchedWebhook(ServerRequestInterface $request): array
@@ -384,7 +385,16 @@ class WhatsAppAdapter implements Adapter, AdapterHasMessagingWindow, HandlesBatc
             $originId = $entry['id'] ?? null;
 
             foreach ($entry['changes'] ?? [] as $change) {
-                if (($change['field'] ?? '') !== 'messages') {
+                $field = $change['field'] ?? '';
+
+                if ($field !== 'messages') {
+                    $events[] = new WebhookEvent(
+                        type: WebhookEvent::TYPE_UNSUPPORTED,
+                        threadId: '',
+                        payload: $change,
+                        originId: $originId,
+                    );
+
                     continue;
                 }
 

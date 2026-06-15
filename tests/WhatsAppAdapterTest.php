@@ -10,8 +10,10 @@ use BootDesk\ChatSDK\Core\Contracts\AdapterHasMessagingWindow;
 use BootDesk\ChatSDK\Core\Contracts\MustRehydrateAttachments;
 use BootDesk\ChatSDK\Core\Exceptions\AdapterException;
 use BootDesk\ChatSDK\Core\Exceptions\AuthenticationException;
+use BootDesk\ChatSDK\Core\Exceptions\UnsupportedOperationException;
 use BootDesk\ChatSDK\Core\PostableMessage;
 use BootDesk\ChatSDK\Core\Tests\Helpers\MemoryStateAdapter;
+use BootDesk\ChatSDK\Core\WebhookEvent;
 use BootDesk\ChatSDK\WhatsApp\WhatsAppAdapter;
 use BootDesk\ChatSDK\WhatsApp\WhatsAppTemplate;
 use Nyholm\Psr7\Factory\Psr17Factory;
@@ -367,7 +369,7 @@ class WhatsAppAdapterTest extends TestCase
 
     public function test_parse_webhook_no_message_throws(): void
     {
-        $this->expectException(AdapterException::class);
+        $this->expectException(UnsupportedOperationException::class);
 
         $request = $this->factory->createServerRequest('POST', '/webhook')
             ->withBody($this->factory->createStream('{"entry":[{"changes":[{"field":"messages","value":{}}]}]}'));
@@ -392,7 +394,7 @@ class WhatsAppAdapterTest extends TestCase
         $request = $this->factory->createServerRequest('POST', '/webhook')
             ->withBody($this->factory->createStream($body));
 
-        $this->expectException(AdapterException::class);
+        $this->expectException(UnsupportedOperationException::class);
         $this->adapter->parseWebhook($request);
     }
 
@@ -1181,7 +1183,9 @@ class WhatsAppAdapterTest extends TestCase
         $request = $this->factory->createServerRequest('POST', '/webhooks/whatsapp')
             ->withBody($this->factory->createStream($body));
 
-        $this->assertSame([], $this->adapter->parseBatchedWebhook($request));
+        $events = $this->adapter->parseBatchedWebhook($request);
+        $this->assertCount(1, $events);
+        $this->assertSame(WebhookEvent::TYPE_UNSUPPORTED, $events[0]->type);
     }
 
     public function test_parse_batched_status_with_pricing_emits_cost_event(): void
