@@ -959,7 +959,6 @@ class WhatsAppAdapter implements Adapter, AdapterHasMessagingWindow, HandlesBatc
         if (isset($msg['image'])) {
             $attachments[] = new Attachment(
                 type: 'image',
-                url: null,
                 name: $msg['image']['caption'] ?? null,
                 mimeType: $msg['image']['mime_type'] ?? null,
                 fetchData: [$this, 'fetchMedia'],
@@ -970,7 +969,6 @@ class WhatsAppAdapter implements Adapter, AdapterHasMessagingWindow, HandlesBatc
         if (isset($msg['document'])) {
             $attachments[] = new Attachment(
                 type: 'file',
-                url: null,
                 name: $msg['document']['filename'] ?? null,
                 mimeType: $msg['document']['mime_type'] ?? null,
                 fetchData: [$this, 'fetchMedia'],
@@ -981,7 +979,6 @@ class WhatsAppAdapter implements Adapter, AdapterHasMessagingWindow, HandlesBatc
         if (isset($msg['audio'])) {
             $attachments[] = new Attachment(
                 type: 'audio',
-                url: null,
                 mimeType: $msg['audio']['mime_type'] ?? null,
                 fetchData: [$this, 'fetchMedia'],
                 fetchMetadata: ['media_id' => $msg['audio']['id']],
@@ -991,7 +988,6 @@ class WhatsAppAdapter implements Adapter, AdapterHasMessagingWindow, HandlesBatc
         if (isset($msg['video'])) {
             $attachments[] = new Attachment(
                 type: 'video',
-                url: null,
                 name: $msg['video']['caption'] ?? null,
                 mimeType: $msg['video']['mime_type'] ?? null,
                 fetchData: [$this, 'fetchMedia'],
