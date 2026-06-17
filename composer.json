@@ -6,7 +6,7 @@
   "license": "MIT",
   "require": {
     "php": ">=8.2",
-    "bootdesk/chat-sdk-core": "0.4.20",
+    "bootdesk/chat-sdk-core": "0.4.21",
     "ext-json": "*",
     "psr/http-client": "^1.0",
     "psr/http-factory": "^1.0"
@@ -29,5 +29,5 @@
   },
   "minimum-stability": "dev",
   "prefer-stable": true,
-  "version": "0.4.20"
+  "version": "0.4.21"
 }
