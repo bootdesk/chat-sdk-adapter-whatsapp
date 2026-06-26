@@ -569,7 +569,7 @@ class WhatsAppAdapter implements Adapter, AdapterHasMessagingWindow, HandlesBatc
 
     public function channelIdFromThreadId(string $threadId): string
     {
-        return $this->decodeThreadId($threadId)['userWaId'];
+        return $threadId;
     }
 
     public function postMessage(string $threadId, PostableMessage $message): SentMessage

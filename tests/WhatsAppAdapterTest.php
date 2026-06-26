@@ -95,7 +95,7 @@ class WhatsAppAdapterTest extends TestCase
 
     public function test_channel_id_from_thread(): void
     {
-        $this->assertSame('5511999999999', $this->adapter->channelIdFromThreadId('whatsapp:phone123:5511999999999'));
+        $this->assertSame('whatsapp:phone123:5511999999999', $this->adapter->channelIdFromThreadId('whatsapp:phone123:5511999999999'));
     }
 
     public function test_verify_webhook_get_challenge(): void
