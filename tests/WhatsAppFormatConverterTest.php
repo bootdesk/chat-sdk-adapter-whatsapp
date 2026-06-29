@@ -116,4 +116,21 @@ class WhatsAppFormatConverterTest extends TestCase
         $this->assertStringContainsString('1. first', $result);
         $this->assertStringContainsString('2. second', $result);
     }
+
+    public function test_render_as_gfm_from_whatsapp_format(): void
+    {
+        $result = $this->converter->renderAsGFM('**bold** *italic* ~~strike~~');
+
+        $this->assertStringContainsString('**bold**', $result);
+        $this->assertStringContainsString('*italic*', $result);
+        $this->assertStringContainsString('~~strike~~', $result);
+    }
+
+    public function test_render_as_gfm_from_ast(): void
+    {
+        $ast = $this->converter->toAst('**bold**');
+        $result = $this->converter->renderAsGFM($ast);
+
+        $this->assertStringContainsString('**bold**', $result);
+    }
 }
