@@ -1650,4 +1650,260 @@ class WhatsAppAdapterTest extends TestCase
 
         $rehydrated->read();
     }
+
+    public function test_parse_location_message(): void
+    {
+        $body = json_encode([
+            'object' => 'whatsapp_business_account',
+            'entry' => [[
+                'id' => '123',
+                'changes' => [[
+                    'field' => 'messages',
+                    'value' => [
+                        'messaging_product' => 'whatsapp',
+                        'metadata' => [
+                            'display_phone_number' => '+15551234567',
+                            'phone_number_id' => 'phone123',
+                        ],
+                        'contacts' => [[
+                            'profile' => ['name' => 'John Doe'],
+                            'wa_id' => '5511999999999',
+                        ]],
+                        'messages' => [[
+                            'from' => '5511999999999',
+                            'id' => 'wamid.loc123',
+                            'timestamp' => '1700000000',
+                            'type' => 'location',
+                            'location' => [
+                                'latitude' => 37.7898,
+                                'longitude' => -122.3942,
+                                'name' => 'Pizza Shop',
+                                'address' => '123 Main St',
+                            ],
+                        ]],
+                    ],
+                ]],
+            ]],
+        ]);
+
+        $signature = 'sha256='.hash_hmac('sha256', $body, 'my_app_secret');
+
+        $request = $this->factory->createServerRequest('POST', '/webhooks/whatsapp')
+            ->withHeader('x-hub-signature-256', $signature)
+            ->withBody($this->factory->createStream($body));
+
+        $message = $this->adapter->parseWebhook($request);
+
+        $this->assertCount(1, $message->attachments);
+        $attachment = $message->attachments[0];
+        $this->assertSame('location', $attachment->type);
+        $this->assertSame(37.7898, $attachment->lat);
+        $this->assertSame(-122.3942, $attachment->lng);
+        $this->assertSame('Pizza Shop', $attachment->name);
+        $this->assertSame('123 Main St', $attachment->address);
+    }
+
+    public function test_parse_location_message_without_name(): void
+    {
+        $body = json_encode([
+            'object' => 'whatsapp_business_account',
+            'entry' => [[
+                'id' => '123',
+                'changes' => [[
+                    'field' => 'messages',
+                    'value' => [
+                        'messaging_product' => 'whatsapp',
+                        'metadata' => [
+                            'display_phone_number' => '+15551234567',
+                            'phone_number_id' => 'phone123',
+                        ],
+                        'contacts' => [[
+                            'profile' => ['name' => 'Jane Doe'],
+                            'wa_id' => '5511988888888',
+                        ]],
+                        'messages' => [[
+                            'from' => '5511988888888',
+                            'id' => 'wamid.loc456',
+                            'timestamp' => '1700000001',
+                            'type' => 'location',
+                            'location' => [
+                                'latitude' => 40.7128,
+                                'longitude' => -74.006,
+                            ],
+                        ]],
+                    ],
+                ]],
+            ]],
+        ]);
+
+        $signature = 'sha256='.hash_hmac('sha256', $body, 'my_app_secret');
+
+        $request = $this->factory->createServerRequest('POST', '/webhooks/whatsapp')
+            ->withHeader('x-hub-signature-256', $signature)
+            ->withBody($this->factory->createStream($body));
+
+        $message = $this->adapter->parseWebhook($request);
+
+        $this->assertCount(1, $message->attachments);
+        $attachment = $message->attachments[0];
+        $this->assertSame('location', $attachment->type);
+        $this->assertSame(40.7128, $attachment->lat);
+        $this->assertSame(-74.006, $attachment->lng);
+        $this->assertNull($attachment->name);
+        $this->assertNull($attachment->address);
+    }
+
+    public function test_post_message_with_location_attachment(): void
+    {
+        $capturedBody = '';
+
+        $mockClient = new class($this->factory, $capturedBody) implements ClientInterface
+        {
+            public function __construct(
+                private Psr17Factory $factory,
+                private string &$capturedBody,
+            ) {}
+
+            public function sendRequest(RequestInterface $request): ResponseInterface
+            {
+                $this->capturedBody = (string) $request->getBody();
+
+                return $this->factory->createResponse(200)->withBody(
+                    $this->factory->createStream(json_encode([
+                        'messaging_product' => 'whatsapp',
+                        'contacts' => [['input' => '1234567890', 'wa_id' => '1234567890']],
+                        'messages' => [['id' => 'wamid.test']],
+                    ]))
+                );
+            }
+        };
+
+        $adapter = new WhatsAppAdapter(
+            accessToken: 'test_token',
+            phoneNumberId: 'phone123',
+            appSecret: 'my_app_secret',
+            verifyToken: 'my_verify_token',
+            httpClient: $mockClient,
+            psrFactory: $this->factory,
+        );
+
+        $adapter->postMessage(
+            'whatsapp:phone123:5511999999999',
+            new PostableMessage(
+                content: '',
+                attachments: [Attachment::location(34.0522, -118.2437, name: 'LA', address: 'California')],
+            )
+        );
+
+        $body = json_decode($capturedBody, true);
+        $this->assertSame('location', $body['type']);
+        $this->assertSame([
+            'longitude' => -118.2437,
+            'latitude' => 34.0522,
+            'name' => 'LA',
+            'address' => 'California',
+        ], $body['location']);
+    }
+
+    public function test_parse_sticker_message(): void
+    {
+        $body = json_encode([
+            'object' => 'whatsapp_business_account',
+            'entry' => [[
+                'id' => '123',
+                'changes' => [[
+                    'field' => 'messages',
+                    'value' => [
+                        'messaging_product' => 'whatsapp',
+                        'metadata' => [
+                            'display_phone_number' => '+15551234567',
+                            'phone_number_id' => 'phone123',
+                        ],
+                        'contacts' => [[
+                            'profile' => ['name' => 'John Doe'],
+                            'wa_id' => '5511999999999',
+                        ]],
+                        'messages' => [[
+                            'from' => '5511999999999',
+                            'id' => 'wamid.sticker123',
+                            'timestamp' => '1700000000',
+                            'type' => 'sticker',
+                            'sticker' => [
+                                'id' => 'media_sticker_001',
+                                'mime_type' => 'image/webp',
+                            ],
+                        ]],
+                    ],
+                ]],
+            ]],
+        ]);
+
+        $signature = 'sha256='.hash_hmac('sha256', $body, 'my_app_secret');
+
+        $request = $this->factory->createServerRequest('POST', '/webhooks/whatsapp')
+            ->withHeader('x-hub-signature-256', $signature)
+            ->withBody($this->factory->createStream($body));
+
+        $message = $this->adapter->parseWebhook($request);
+
+        $this->assertCount(1, $message->attachments);
+        $attachment = $message->attachments[0];
+        $this->assertSame('sticker', $attachment->type);
+        $this->assertSame('image/webp', $attachment->mimeType);
+        $this->assertSame(['media_id' => 'media_sticker_001'], $attachment->fetchMetadata);
+    }
+
+    public function test_parse_contacts_message(): void
+    {
+        $body = json_encode([
+            'object' => 'whatsapp_business_account',
+            'entry' => [[
+                'id' => '123',
+                'changes' => [[
+                    'field' => 'messages',
+                    'value' => [
+                        'messaging_product' => 'whatsapp',
+                        'metadata' => [
+                            'display_phone_number' => '+15551234567',
+                            'phone_number_id' => 'phone123',
+                        ],
+                        'contacts' => [[
+                            'profile' => ['name' => 'John Doe'],
+                            'wa_id' => '5511999999999',
+                        ]],
+                        'messages' => [[
+                            'from' => '5511999999999',
+                            'id' => 'wamid.contact123',
+                            'timestamp' => '1700000000',
+                            'type' => 'contacts',
+                            'contacts' => [[
+                                'name' => ['formatted_name' => 'John'],
+                                'phones' => [['phone' => '+123']],
+                            ]],
+                        ]],
+                    ],
+                ]],
+            ]],
+        ]);
+
+        $signature = 'sha256='.hash_hmac('sha256', $body, 'my_app_secret');
+
+        $request = $this->factory->createServerRequest('POST', '/webhooks/whatsapp')
+            ->withHeader('x-hub-signature-256', $signature)
+            ->withBody($this->factory->createStream($body));
+
+        $message = $this->adapter->parseWebhook($request);
+
+        $this->assertCount(1, $message->attachments);
+        $attachment = $message->attachments[0];
+        $this->assertSame('contact', $attachment->type);
+        $this->assertSame('John', $attachment->name);
+        $this->assertSame('text/vcard', $attachment->mimeType);
+        $this->assertStringStartsWith('data:text/vcard;base64,', $attachment->url);
+
+        $vcard = base64_decode(substr($attachment->url, 22));
+        $this->assertStringContainsString('FN:John', $vcard);
+        $this->assertStringContainsString('TEL;TYPE=VOICE:+123', $vcard);
+        $this->assertSame(['phone' => '+123'], $attachment->fetchMetadata);
+    }
 }

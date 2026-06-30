@@ -592,6 +592,42 @@ class WhatsAppAdapter implements Adapter, AdapterHasMessagingWindow, HandlesBatc
         // Attachments take priority
         if ($message->attachments !== []) {
             $att = $message->attachments[0];
+
+            // Location attachment — native WhatsApp location message
+            if ($att->type === 'location') {
+                $text = $this->formatConverter->renderPostable($message);
+                $locParams = [
+                    'messaging_product' => 'whatsapp',
+                    'type' => 'location',
+                    'location' => [
+                        'longitude' => $att->lng,
+                        'latitude' => $att->lat,
+                        'name' => $att->name,
+                        'address' => $att->address,
+                    ],
+                ];
+
+                $locParams = $this->addRecipientParam($locParams, $decoded['userWaId']);
+                $response = $this->apiCall("/{$this->phoneNumberId}/messages", $locParams);
+                $additionalMessages = [];
+
+                // WhatsApp doesn't support caption on location — send text separately
+                if ($text !== '') {
+                    $textParams = $this->buildMessageParams($message);
+                    $textParams = $this->addRecipientParam($textParams, $decoded['userWaId']);
+                    $textParams['messaging_product'] = 'whatsapp';
+                    $textResponse = $this->apiCall("/{$this->phoneNumberId}/messages", $textParams);
+                    $additionalMessages[] = new SentMessage(
+                        id: $textResponse['messages'][0]['id'] ?? '',
+                        threadId: $threadId,
+                    );
+                }
+
+                $msgId = $response['messages'][0]['id'] ?? uniqid('wa_', true);
+
+                return new SentMessage(id: $msgId, threadId: $threadId, additionalMessages: $additionalMessages);
+            }
+
             $text = $this->formatConverter->renderPostable($message);
             $params = [
                 'messaging_product' => 'whatsapp',
@@ -993,6 +1029,66 @@ class WhatsAppAdapter implements Adapter, AdapterHasMessagingWindow, HandlesBatc
                 fetchData: [$this, 'fetchMedia'],
                 fetchMetadata: ['media_id' => $msg['video']['id']],
             );
+        }
+
+        if (isset($msg['location'])) {
+            $loc = $msg['location'];
+            $attachments[] = Attachment::location(
+                lat: (float) ($loc['latitude'] ?? 0),
+                lng: (float) ($loc['longitude'] ?? 0),
+                name: $loc['name'] ?? null,
+                address: $loc['address'] ?? null,
+            );
+        }
+
+        if (isset($msg['sticker'])) {
+            $attachments[] = new Attachment(
+                type: 'sticker',
+                name: 'sticker.webp',
+                mimeType: $msg['sticker']['mime_type'] ?? 'image/webp',
+                fetchData: [$this, 'fetchMedia'],
+                fetchMetadata: ['media_id' => $msg['sticker']['id']],
+            );
+        }
+
+        if (isset($msg['contacts'])) {
+            foreach ($msg['contacts'] as $contact) {
+                $name = $contact['name']['formatted_name'] ?? null;
+                $phones = $contact['phones'] ?? [];
+                $phone = $phones[0]['phone'] ?? null;
+
+                $vcardLines = ['BEGIN:VCARD', 'VERSION:3.0'];
+                if ($name !== null) {
+                    $vcardLines[] = "FN:{$name}";
+                    $first = $contact['name']['first_name'] ?? '';
+                    $last = $contact['name']['last_name'] ?? '';
+                    if ($first !== '' || $last !== '') {
+                        $vcardLines[] = "N:{$last};{$first};;;";
+                    }
+                }
+                foreach ($phones as $p) {
+                    $vcardLines[] = 'TEL;TYPE='.strtoupper($p['type'] ?? 'VOICE').':'.$p['phone'];
+                }
+                foreach ($contact['emails'] ?? [] as $email) {
+                    $vcardLines[] = 'EMAIL:'.$email['email'];
+                }
+                if (isset($contact['org']['company'])) {
+                    $vcardLines[] = 'ORG:'.$contact['org']['company'];
+                }
+                foreach ($contact['urls'] ?? [] as $url) {
+                    $vcardLines[] = 'URL:'.$url['url'];
+                }
+                $vcardLines[] = 'END:VCARD';
+                $vcard = implode("\n", $vcardLines);
+
+                $attachments[] = new Attachment(
+                    type: 'contact',
+                    url: 'data:text/vcard;base64,'.base64_encode($vcard),
+                    name: $name,
+                    mimeType: 'text/vcard',
+                    fetchMetadata: array_filter(['phone' => $phone]),
+                );
+            }
         }
 
         return $attachments;
