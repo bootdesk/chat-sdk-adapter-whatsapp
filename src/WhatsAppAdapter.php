@@ -40,6 +40,8 @@ use Psr\Http\Client\ClientInterface;
 use Psr\Http\Message\ResponseInterface;
 use Psr\Http\Message\ServerRequestInterface;
 use Psr\Http\Message\StreamInterface;
+use Psr\Log\LoggerInterface;
+use Psr\Log\NullLogger;
 
 class WhatsAppAdapter implements Adapter, AdapterHasMessagingWindow, HandlesBatchedWebhooks, HandlesMessageCosts, HandlesReactions, HandlesSlashCommands, HandlesStatuses, HasAuthorInfo, MustRehydrateAttachments, RequiresAsyncResponse
 {
@@ -55,6 +57,8 @@ class WhatsAppAdapter implements Adapter, AdapterHasMessagingWindow, HandlesBatc
 
     protected EmojiResolver $emojiResolver;
 
+    protected readonly ?LoggerInterface $logger;
+
     public function __construct(
         protected readonly string $accessToken,
         protected readonly ClientInterface $httpClient,
@@ -65,7 +69,9 @@ class WhatsAppAdapter implements Adapter, AdapterHasMessagingWindow, HandlesBatc
         protected readonly ?Psr17Factory $psrFactory = null,
         ?FileUploadConverter $fileUploadConverter = null,
         ?EmojiResolver $emojiResolver = null,
+        ?LoggerInterface $logger = null,
     ) {
+        $this->logger = $logger ?? new NullLogger;
         $this->formatConverter = new WhatsAppFormatConverter;
         $this->fileUploadConverter = $fileUploadConverter ?? new NullFileUploadConverter;
         $this->emojiResolver = $emojiResolver ?? EmojiResolver::default();
@@ -336,6 +342,7 @@ class WhatsAppAdapter implements Adapter, AdapterHasMessagingWindow, HandlesBatc
         $payload = json_decode($body, true);
 
         if ($payload === null) {
+            $this->logger->error('[WhatsApp] Invalid JSON payload from webhook');
             throw new AdapterException('Invalid JSON payload from WhatsApp');
         }
 
@@ -362,7 +369,14 @@ class WhatsAppAdapter implements Adapter, AdapterHasMessagingWindow, HandlesBatc
                         continue;
                     }
 
-                    return $this->parseInboundMessage($msg, $contacts[0] ?? null, $phoneNumberId, $body, $originId);
+                    $message = $this->parseInboundMessage($msg, $contacts[0] ?? null, $phoneNumberId, $body, $originId);
+
+                    $this->logger->info('[WhatsApp] Message parsed', [
+                        'from' => $message->author->id,
+                        'text_preview' => mb_substr($message->text, 0, 100),
+                    ]);
+
+                    return $message;
                 }
             }
         }
@@ -575,6 +589,14 @@ class WhatsAppAdapter implements Adapter, AdapterHasMessagingWindow, HandlesBatc
     public function postMessage(string $threadId, PostableMessage $message): SentMessage
     {
         $decoded = $this->decodeThreadId($threadId);
+
+        $this->logger->info('[WhatsApp] Posting message', [
+            'threadId' => $threadId,
+            'has_files' => $message->files !== [] ? 'yes' : 'no',
+            'has_attachments' => $message->attachments !== [] ? 'yes' : 'no',
+            'is_card' => $message->isCard() ? 'yes' : 'no',
+            'text_preview' => mb_substr($message->getTextContent(), 0, 100),
+        ]);
 
         // Convert files to attachments via the registered converter
         if ($message->files !== []) {
@@ -1171,6 +1193,11 @@ class WhatsAppAdapter implements Adapter, AdapterHasMessagingWindow, HandlesBatc
         $factory = $this->psrFactory ?? new Psr17Factory;
         $url = $overrideUrl ?? "{$this->apiUrl}{$endpoint}";
 
+        $this->logger->debug('[WhatsApp] API call', [
+            'endpoint' => $endpoint,
+            'method' => $method,
+        ]);
+
         if ($method === 'GET') {
             $request = $factory->createRequest('GET', $url)
                 ->withHeader('Authorization', "Bearer {$this->accessToken}");
@@ -1187,6 +1214,11 @@ class WhatsAppAdapter implements Adapter, AdapterHasMessagingWindow, HandlesBatc
 
         if ($statusCode < 200 || $statusCode >= 300) {
             $responseBody = (string) $psrResponse->getBody();
+            $this->logger->error('[WhatsApp] API error', [
+                'endpoint' => $endpoint,
+                'statusCode' => $statusCode,
+                'response' => mb_substr($responseBody, 0, 500),
+            ]);
             throw new AdapterException("WhatsApp API returned HTTP {$statusCode}: {$responseBody}");
         }
 
