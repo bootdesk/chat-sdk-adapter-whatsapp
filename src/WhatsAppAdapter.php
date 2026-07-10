@@ -374,6 +374,7 @@ class WhatsAppAdapter implements Adapter, AdapterHasMessagingWindow, HandlesBatc
                     $this->logger->info('[WhatsApp] Message parsed', [
                         'from' => $message->author->id,
                         'text_preview' => mb_substr($message->text, 0, 100),
+                        'body' => mb_substr($body, 0, 500),
                     ]);
 
                     return $message;
