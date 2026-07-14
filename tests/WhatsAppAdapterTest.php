@@ -1906,4 +1906,147 @@ class WhatsAppAdapterTest extends TestCase
         $this->assertStringContainsString('TEL;TYPE=VOICE:+123', $vcard);
         $this->assertSame(['phone' => '+123'], $attachment->fetchMetadata);
     }
+
+    // --- GET query params tests ---
+
+    public function test_api_call_get_with_params_appends_query_string(): void
+    {
+        $capturedUri = null;
+        $spy = $this->createSpyClient(function (RequestInterface $request) use (&$capturedUri): void {
+            $capturedUri = (string) $request->getUri();
+        });
+
+        $adapter = new WhatsAppAdapter(
+            accessToken: 'test_token',
+            phoneNumberId: 'phone123',
+            appSecret: 'my_app_secret',
+            verifyToken: 'my_verify_token',
+            httpClient: $spy,
+            psrFactory: $this->factory,
+        );
+
+        $apiCall = \Closure::bind(
+            fn (string $endpoint, array $params = [], string $method = 'POST') => $this->apiCall($endpoint, $params, $method),
+            $adapter,
+            WhatsAppAdapter::class,
+        );
+
+        $apiCall('/media', ['fields' => 'url,mime_type'], 'GET');
+
+        $this->assertNotNull($capturedUri);
+        $this->assertStringContainsString('fields=url%2Cmime_type', $capturedUri);
+    }
+
+    public function test_api_call_get_without_params_no_query_string(): void
+    {
+        $capturedUri = null;
+        $spy = $this->createSpyClient(function (RequestInterface $request) use (&$capturedUri): void {
+            $capturedUri = (string) $request->getUri();
+        });
+
+        $adapter = new WhatsAppAdapter(
+            accessToken: 'test_token',
+            phoneNumberId: 'phone123',
+            appSecret: 'my_app_secret',
+            verifyToken: 'my_verify_token',
+            httpClient: $spy,
+            psrFactory: $this->factory,
+        );
+
+        $apiCall = \Closure::bind(
+            fn (string $endpoint, array $params = [], string $method = 'POST') => $this->apiCall($endpoint, $params, $method),
+            $adapter,
+            WhatsAppAdapter::class,
+        );
+
+        $apiCall('/media', [], 'GET');
+
+        $this->assertNotNull($capturedUri);
+        $this->assertStringNotContainsString('?', $capturedUri);
+    }
+
+    public function test_api_call_post_still_sends_params_as_body(): void
+    {
+        $capturedBody = null;
+        $capturedMethod = null;
+        $spy = $this->createSpyClient(function (RequestInterface $request) use (&$capturedBody, &$capturedMethod): void {
+            $capturedBody = (string) $request->getBody();
+            $capturedMethod = $request->getMethod();
+        });
+
+        $adapter = new WhatsAppAdapter(
+            accessToken: 'test_token',
+            phoneNumberId: 'phone123',
+            appSecret: 'my_app_secret',
+            verifyToken: 'my_verify_token',
+            httpClient: $spy,
+            psrFactory: $this->factory,
+        );
+
+        $apiCall = \Closure::bind(
+            fn (string $endpoint, array $params = [], string $method = 'POST') => $this->apiCall($endpoint, $params, $method),
+            $adapter,
+            WhatsAppAdapter::class,
+        );
+
+        $apiCall('/messages', ['to' => '55119', 'type' => 'text'], 'POST');
+
+        $this->assertSame('POST', $capturedMethod);
+        $this->assertNotNull($capturedBody);
+        $body = json_decode($capturedBody, true);
+        $this->assertSame('55119', $body['to']);
+        $this->assertSame('text', $body['type']);
+    }
+
+    public function test_api_call_patch_respects_method_param(): void
+    {
+        $capturedMethod = null;
+        $capturedBody = null;
+        $spy = $this->createSpyClient(function (RequestInterface $request) use (&$capturedMethod, &$capturedBody): void {
+            $capturedMethod = $request->getMethod();
+            $capturedBody = (string) $request->getBody();
+        });
+
+        $adapter = new WhatsAppAdapter(
+            accessToken: 'test_token',
+            phoneNumberId: 'phone123',
+            appSecret: 'my_app_secret',
+            verifyToken: 'my_verify_token',
+            httpClient: $spy,
+            psrFactory: $this->factory,
+        );
+
+        $apiCall = \Closure::bind(
+            fn (string $endpoint, array $params = [], string $method = 'POST') => $this->apiCall($endpoint, $params, $method),
+            $adapter,
+            WhatsAppAdapter::class,
+        );
+
+        $apiCall('/some/resource', ['name' => 'new'], 'PATCH');
+
+        $this->assertSame('PATCH', $capturedMethod);
+        $this->assertNotNull($capturedBody);
+        $body = json_decode($capturedBody, true);
+        $this->assertSame('new', $body['name']);
+    }
+
+    private function createSpyClient(callable $onRequest): ClientInterface
+    {
+        return new class($this->factory, $onRequest) implements ClientInterface
+        {
+            public function __construct(
+                private Psr17Factory $factory,
+                private \Closure $onRequest,
+            ) {}
+
+            public function sendRequest(RequestInterface $request): ResponseInterface
+            {
+                ($this->onRequest)($request);
+
+                return $this->factory->createResponse(200)->withBody(
+                    $this->factory->createStream(json_encode(['success' => true]))
+                );
+            }
+        };
+    }
 }

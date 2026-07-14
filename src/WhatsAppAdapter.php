@@ -1200,11 +1200,15 @@ class WhatsAppAdapter implements Adapter, AdapterHasMessagingWindow, HandlesBatc
         ]);
 
         if ($method === 'GET') {
+            if ($params !== []) {
+                $url .= (str_contains($url, '?') ? '&' : '?').http_build_query($params);
+            }
+
             $request = $factory->createRequest('GET', $url)
                 ->withHeader('Authorization', "Bearer {$this->accessToken}");
         } else {
             $body = json_encode(array_filter($params, fn ($v): bool => $v !== null));
-            $request = $factory->createRequest('POST', $url)
+            $request = $factory->createRequest($method, $url)
                 ->withHeader('Authorization', "Bearer {$this->accessToken}")
                 ->withHeader('Content-Type', 'application/json')
                 ->withBody($factory->createStream($body));
